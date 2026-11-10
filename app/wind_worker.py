@@ -5,14 +5,17 @@ import math
 import queue
 import time
 import traceback
+import heapq
+import threading
 from datetime import timedelta
 
 from .domain import Bar, dt, iso, now
+from .options_wind import OPTION_FIELDS, dispatch
 
 
-def serialize_quotes(result):
+def serialize_quotes(result, channel='futures', snapshot=False):
     if result.ErrorCode:
-        return {'type': 'feed_error', 'message': f'WSQ错误 {result.ErrorCode}'}
+        return {'type': 'option_feed_error' if channel=='options' else 'feed_error', 'message': f'WSQ错误 {result.ErrorCode}'}
     records = {}
     for i, code in enumerate(result.Codes):
         values = {}
@@ -21,15 +24,31 @@ def serialize_quotes(result):
                 value = column[i]
                 if isinstance(value, (int, float)) and math.isfinite(value):
                     values[field.lower()] = value
+                elif channel=='options':
+                    # Explicit invalidation is different from an omitted delta.
+                    values[field.lower()] = None
         records[code] = values
-    return {'type': 'quotes', 'records': records, 'received_at': iso(now()), 'received_ms':time.time()*1000}
+    return {'type': 'option_quotes' if channel=='options' else 'quotes', 'records': records, 'snapshot':snapshot,'received_at': iso(now()), 'received_ms':time.time()*1000}
 
 
 def worker_main(commands, results):
     from WindPy import w
 
     callbacks = queue.SimpleQueue()
-    subscription = None
+    subscriptions = {}
+    jobs=[]
+    counter=0
+    done=threading.Event()
+
+    def relay():
+        while not done.is_set():
+            try:
+                r,channel=callbacks.get(timeout=.1)
+                results.put(serialize_quotes(r,channel))
+            except queue.Empty:
+                pass
+
+    threading.Thread(target=relay,daemon=True).start()
 
     def check(r, label):
         if r.ErrorCode:
@@ -40,12 +59,19 @@ def worker_main(commands, results):
         check(w.start(waitTime=10), '连接')
         results.put({'type': 'connected'})
         while True:
-            while not callbacks.empty():
-                results.put(callbacks.get_nowait())
             try:
-                cmd = commands.get(timeout=0.05)
+                cmd=commands.get(timeout=.01 if jobs else .05)
+                counter+=1
+                heapq.heappush(jobs,(-100 if cmd['op']=='stop' else 10 if cmd['op'].startswith('option_') else 0,counter,cmd))
+                while True:
+                    cmd=commands.get_nowait()
+                    counter+=1
+                    heapq.heappush(jobs,(-100 if cmd['op']=='stop' else 10 if cmd['op'].startswith('option_') else 0,counter,cmd))
             except queue.Empty:
+                pass
+            if not jobs:
                 continue
+            cmd=heapq.heappop(jobs)[2]
             request_id, op = cmd['id'], cmd['op']
             results.put({'type': 'request_started', 'id': request_id, 'op': op})
             try:
@@ -59,14 +85,14 @@ def worker_main(commands, results):
                     r = check(w.wss(','.join(aliases), 'trade_hiscode', 'tradeDate=' + cmd['day'].replace('-', '')), '主力映射')
                     payload = dict(zip([code.split('.')[0] for code in aliases], r.Data[0]))
                 elif op == 'subscribe':
-                    if subscription:
-                        w.cancelRequest(subscription)
+                    if subscriptions.get('futures'):
+                        w.cancelRequest(subscriptions['futures'])
                     fields = 'rt_last,rt_bid1,rt_ask1,rt_vol,rt_date,rt_time'
                     codes = ','.join(cmd['codes'])
-                    r = check(w.wsq(codes, fields, func=lambda r: callbacks.put(serialize_quotes(r))), '订阅')
-                    subscription = r.RequestID
-                    payload = {'request_id': subscription}
-                    results.put(serialize_quotes(check(w.wsq(codes, fields), '快照')))
+                    r = check(w.wsq(codes, fields, func=lambda r: callbacks.put((r,'futures'))), '订阅')
+                    subscriptions['futures'] = r.RequestID
+                    payload = {'request_id': r.RequestID}
+                    results.put(serialize_quotes(check(w.wsq(codes, fields), '快照'),snapshot=True))
                 elif op == 'snapshot':
                     r = check(w.wsq(','.join(cmd['codes']), 'rt_last,rt_bid1,rt_ask1,rt_vol,rt_date,rt_time'), '快照')
                     results.put(serialize_quotes(r))
@@ -82,6 +108,18 @@ def worker_main(commands, results):
                                 payload.append(b.json())
                         except (ValueError, TypeError, IndexError, KeyError):
                             continue
+                elif op == 'option_snapshot':
+                    results.put(serialize_quotes(check(w.wsq(','.join(cmd['codes']),OPTION_FIELDS),'期权快照'),'options',True))
+                    payload=None
+                elif op == 'option_subscribe':
+                    if subscriptions.get('options'):
+                        w.cancelRequest(subscriptions.pop('options'))
+                    if cmd['codes']:
+                        r=check(w.wsq(','.join(cmd['codes']),OPTION_FIELDS,func=lambda r:callbacks.put((r,'options'))),'期权订阅')
+                        subscriptions['options']=r.RequestID
+                    payload={'request_id':subscriptions.get('options')}
+                elif op.startswith('option_'):
+                    payload=dispatch(w,cmd,check)
                 else:
                     raise ValueError('未知行情请求')
                 results.put({'type': 'response', 'id': request_id, 'op': op, 'payload': payload, 'received_at': iso(now())})
@@ -90,8 +128,9 @@ def worker_main(commands, results):
     except Exception as exc:
         results.put({'type': 'fatal', 'message': str(exc)})
     finally:
+        done.set()
         try:
-            if subscription:
+            for subscription in subscriptions.values():
                 w.cancelRequest(subscription)
             w.stop()
         except Exception:

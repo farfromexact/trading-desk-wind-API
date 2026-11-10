@@ -1,0 +1,23 @@
+{
+  "version": "options-context-v1.0",
+  "enabled": true,
+  "risk_free_rate": 0.02,
+  "rate_basis": "可配置的年化定价假设，非实时利率",
+  "holding_days": 5,
+  "minimum_trading_days": 5,
+  "expiry_buffer_days": 2,
+  "expiry_count": 2,
+  "strikes_per_expiry": 21,
+  "quote_batch_size": 60,
+  "snapshot_seconds": 30,
+  "fresh_seconds": 15,
+  "max_skew_seconds": 10,
+  "maximum_relative_spread": 0.2,
+  "slippage_ticks_each_side": 1,
+  "fee_per_contract_each_side": {"IM": null, "IF": null, "IH": null, "AG": null, "AU": null, "SC": null},
+  "futures_fee_per_contract_each_side": {"IM": null, "IF": null, "IH": null, "AG": null, "AU": null, "SC": null},
+  "futures_multiplier": {"IM": 200, "IF": 300, "IH": 300, "AG": 15, "AU": 1000, "SC": 1000},
+  "iv_change_observation": 0.02,
+  "iv_rv_observation_ratio": 1.2,
+  "minimum_observation_days": 20
+}

@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import zlib
 from pathlib import Path
 
 from .domain import Bar, iso, now
@@ -19,6 +20,9 @@ class Store:
           kind TEXT, payload TEXT, recorded_at TEXT);
         CREATE TABLE IF NOT EXISTS quotes(id INTEGER PRIMARY KEY, contract TEXT, received_at TEXT, payload TEXT);
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, payload TEXT);
+        CREATE TABLE IF NOT EXISTS option_records(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE,
+          root TEXT,kind TEXT,source_at TEXT,recorded_at TEXT,payload BLOB);
+        CREATE INDEX IF NOT EXISTS option_records_lookup ON option_records(kind,root,seq);
         ''')
 
     def save_bars(self, bars, seen_at):
@@ -60,3 +64,18 @@ class Store:
     def close(self):
         self.db.commit()
         self.db.close()
+
+    def option_record(self, ident, root, kind, payload, source_at=None):
+        packed=zlib.compress(json.dumps(payload,ensure_ascii=False,allow_nan=False,sort_keys=True).encode('utf-8'))
+        cur=self.db.execute('INSERT OR IGNORE INTO option_records(id,root,kind,source_at,recorded_at,payload) VALUES(?,?,?,?,?,?)',
+                            (ident,root,kind,source_at,iso(now()),packed))
+        self.db.commit()
+        return cur.rowcount>0
+
+    def option_history(self, kind, root=None, limit=100, after=0):
+        sql='SELECT seq,id,source_at,recorded_at,payload FROM option_records WHERE kind=? AND seq>?'
+        args=[kind,after]
+        if root:
+            sql+=' AND root=?'; args.append(root)
+        sql+=' ORDER BY seq DESC LIMIT ?'; args.append(limit)
+        return [dict(seq=s,id=i,source_at=a,recorded_at=r,payload=json.loads(zlib.decompress(p))) for s,i,a,r,p in self.db.execute(sql,args)]

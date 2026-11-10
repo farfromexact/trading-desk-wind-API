@@ -13,6 +13,7 @@ from .live_preview import LivePreview
 from .markets import market, valid_contract, root_of, trading_day, trading_windows, day_close, labels
 from .storage import Store
 from .wind_worker import worker_main
+from .options_service import OptionsDesk
 
 
 class Desk:
@@ -57,8 +58,10 @@ class Desk:
         self.gap_cache={}
         self.running=True
         self.metrics={'started_at':iso(now()),'rule_version':self.config['version'],'first_live_at':None,'last_live_at':None,'healthy_seconds':0.,'quote_updates':0,'bar_batches':0,'live_confirmations':0,'restarts':0,'ui_samples':0,'ui_max_ms':0,'ui_over_2s':0,'source_ui_samples':0,'source_ui_max_ms':0,'source_ui_over_2s':0,'per_contract':{}}
+        self.options=OptionsDesk(self)
 
     def start_worker(self):
+        self.options.reset()
         ctx=mp.get_context('spawn')
         self.commands,self.results=ctx.Queue(),ctx.Queue()
         self.proc=ctx.Process(target=worker_main,args=(self.commands,self.results),daemon=True)
@@ -94,6 +97,11 @@ class Desk:
             op=event.get('opportunity',{})
             event['audible']=bool(allow_sound and not event['historical'] and event['kind']=='opportunity' and op.get('status')=='confirmed')
             inserted=self.store.event(event)
+            if inserted:
+                try:
+                    self.options.on_event(event)
+                except Exception as exc:
+                    self.options.error(op.get('root',''),f'期权审计失败：{exc}')
             if inserted and event['audible']:
                 self.metrics['live_confirmations']+=1
         engine.events.clear()
@@ -275,6 +283,10 @@ class Desk:
             merged['received_ms']=packet.get('received_ms',time.time()*1000)
             merged['processed_at']=iso(now())
             self.quotes[code]=merged
+            try:
+                self.options.track_future(code,merged,now())
+            except Exception as exc:
+                self.options.error(root_of(code),f'报价路径记录暂停：{exc}')
             if quote_problem(merged,now(),self.config['quote_stale_seconds'],code,cal) is None:
                 self.preview.on_quote(code,merged['rt_last'],new_stamp,cal)
             self.metrics['quote_updates']+=1
@@ -289,6 +301,15 @@ class Desk:
 
     def handle(self, packet):
         kind=packet['type']
+        if kind=='option_quotes':
+            try:
+                self.options.handle_quotes(packet)
+            except Exception as exc:
+                self.options.error('',str(exc))
+            return
+        if kind=='option_feed_error':
+            self.options.error('',packet['message'])
+            return
         if kind=='connected':
             self.connected=True
             self.request_calendars()
@@ -304,6 +325,12 @@ class Desk:
             if not job or job['generation']!=self.generation:
                 return
             cmd=job['cmd']
+            if cmd['op'].startswith('option_'):
+                try:
+                    self.options.handle(cmd,packet)
+                except Exception as exc:
+                    self.options.error(cmd.get('root',''),str(exc))
+                return
             code=cmd.get('code')
             if code and (code not in self.watch.values() or job.get('epoch',self.code_epochs.get(code,0))!=self.code_epochs.get(code,0)):
                 return
@@ -389,7 +416,7 @@ class Desk:
     def request_calendars(self):
         today=now()
         for name in sorted({market(r)['calendar'] for r in self.config['watchlist']}):
-            self.submit('calendar',calendar=name,start=(today-timedelta(days=40)).date().isoformat(),end=(today+timedelta(days=20)).date().isoformat())
+            self.submit('calendar',calendar=name,start=(today-timedelta(days=120)).date().isoformat(),end=(today+timedelta(days=400)).date().isoformat())
         self.calendar_refresh_day=today.date().isoformat()
 
     def schedule_refresh(self):
@@ -469,6 +496,10 @@ class Desk:
                     self.roll_sessions()
                     if self.calendar_refresh_day!=now().date().isoformat():
                         self.request_calendars()
+                    try:
+                        await self.options.tick()
+                    except Exception as exc:
+                        self.options.error('',f'期权模块暂停本轮处理：{type(exc).__name__}: {exc}')
                 elapsed=min(1,clock-self.last_health)
                 self.last_health=clock
                 if self.watch and any(self.health(code)[1] for code in self.watch.values()):
@@ -500,7 +531,9 @@ class Desk:
         phase=f'{active} / {len(instruments)} 品种交易中' if active else '休市 / 等待开盘'
         return {'server_time':iso(now()),'sent_ms':time.time()*1000,'phase':phase,'feed_state':self.feed_state,
                 'last_error':self.last_error,'bootstrap_remaining':len(self.history_pending),'instruments':instruments,
-                'rules':{'version':self.config['version'],'hash':self.config['hash']},'metrics':self.metrics,'offline':self.offline}
+                'rules':{'version':self.config['version'],'hash':self.config['hash']},'metrics':self.metrics,'offline':self.offline,
+                'options':{'version':self.options.config['version'],'contexts':{r:self.options.context(r) for r in self.config['watchlist']},'metrics':self.options.metrics,
+                           'quotes':{code:{k:v for k,v in q.items() if k!='_field_seen'} for code,q in self.options.quotes.items()}}}
 
     def set_watch(self, root, code):
         if root not in self.config['watchlist'] or code and not valid_contract(code,root):

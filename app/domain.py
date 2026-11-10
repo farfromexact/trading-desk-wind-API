@@ -63,7 +63,10 @@ def session(at: datetime, calendar: set[str], code='IM') -> str:
 def expected_end(at: datetime, timeframe: int, calendar: set[str], grace: int = 5, code='IM'):
     from .markets import labels, trading_windows
     cutoff = dt(at)-timedelta(seconds=grace)
-    for day in sorted(calendar, reverse=True):
+    # Option expiries require a longer calendar. Only the nearest future day
+    # can own a current night session; don't materialize a year's future windows.
+    nearest=next((d for d in sorted(calendar) if d>cutoff.date().isoformat()),cutoff.date().isoformat())
+    for day in sorted((d for d in calendar if d<=nearest), reverse=True):
         windows=trading_windows(day,code,calendar)
         if not windows or windows[0][0]>cutoff:
             continue

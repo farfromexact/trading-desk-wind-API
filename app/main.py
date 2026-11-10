@@ -24,6 +24,7 @@ async def lifespan(app):
     yield
     desk.running=False
     await task
+    await desk.options.close()
     desk.stop()
 
 
@@ -96,6 +97,7 @@ async def watch(request:Request,choice:WatchChoice):
 class Timing(BaseModel):
     delay_ms:float
     source_delay_ms:float|None=None
+    option_delay_ms:float|None=None
 
 
 @app.post('/api/telemetry')
@@ -111,7 +113,71 @@ async def telemetry(request:Request,timing:Timing):
         metrics['source_ui_samples']+=1
         metrics['source_ui_max_ms']=max(metrics['source_ui_max_ms'],round(source_delay,1))
         metrics['source_ui_over_2s']+=int(source_delay>2000)
+    option_delay=timing.option_delay_ms
+    if option_delay is not None and 0<=option_delay<60000:
+        m=request.app.state.desk.options.metrics
+        m['ui_samples']+=1
+        m['ui_max_ms']=max(m['ui_max_ms'],round(option_delay,1))
+        m['ui_over_2s']+=int(option_delay>2000)
     return {'ok':True}
+
+
+def option_root(request, root):
+    if root not in request.app.state.desk.config['watchlist']:
+        raise HTTPException(400,'未知监控品种')
+    return request.app.state.desk.options
+
+
+@app.get('/api/options/context')
+async def option_context(request:Request,root:str='IM'):
+    return option_root(request,root).context(root)
+
+
+@app.get('/api/options/chain')
+async def option_chain(request:Request,root:str='IM',expiry:str|None=None):
+    options=option_root(request,root)
+    rows=options.rows.get(root,[])
+    return dict(context=options.context(root),rows=[r for r in rows if not expiry or r['expiry']==expiry],
+                metadata_count=len(options.entries.get(root,{}).get('contracts',[])))
+
+
+@app.get('/api/options/candidates')
+async def option_candidates(request:Request,root:str='IM',opportunity_id:str|None=None,holding_days:int=5):
+    if holding_days not in (0,1,3,5):
+        raise HTTPException(400,'持有周期为日内或1/3/5个交易日')
+    return await option_root(request,root).candidate_view(root,opportunity_id,holding_days)
+
+
+@app.get('/api/options/research')
+async def option_research(request:Request):
+    return request.app.state.desk.options.report()
+
+
+class OptionFee(BaseModel):
+    root:str
+    fee:float|None=None
+
+
+@app.get('/api/options/settings')
+async def option_settings(request:Request):
+    return request.app.state.desk.options.config
+
+
+@app.post('/api/options/fees')
+async def option_fee(request:Request,choice:OptionFee):
+    try:
+        return request.app.state.desk.options.set_fee(choice.root,choice.fee)
+    except ValueError as exc:
+        raise HTTPException(400,str(exc))
+
+
+@app.get('/api/options/audit')
+async def option_audit(request:Request,kind:str='evaluation',root:str|None=None,limit:int=100,after:int=0):
+    if kind not in ('signal','comparison','lifecycle','trigger','path','evaluation','context','chain','vendor','quotes'):
+        raise HTTPException(400,'未知期权记录类型')
+    if root:
+        option_root(request,root)
+    return request.app.state.desk.store.option_history(kind,root,min(max(limit,1),1000),max(after,0))
 
 
 @app.get('/api/stream')
