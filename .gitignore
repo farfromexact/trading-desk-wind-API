@@ -1,0 +1,14 @@
+.venv/
+.tmp/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+node_modules/
+frontend/dist/
+data/
+logs/
+.pytest_cache/
+reports/*
+!reports/*.md
