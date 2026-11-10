@@ -59,12 +59,15 @@ class Desk:
         self.running=True
         self.metrics={'started_at':iso(now()),'rule_version':self.config['version'],'first_live_at':None,'last_live_at':None,'healthy_seconds':0.,'quote_updates':0,'bar_batches':0,'live_confirmations':0,'restarts':0,'ui_samples':0,'ui_max_ms':0,'ui_over_2s':0,'source_ui_samples':0,'source_ui_max_ms':0,'source_ui_over_2s':0,'per_contract':{}}
         self.options=OptionsDesk(self)
+        self.request_metrics={}
+        self.quote_processing_lag_ms=0.
 
     def start_worker(self):
         self.options.reset()
+        self.close_worker_queues()
         ctx=mp.get_context('spawn')
-        self.commands,self.results=ctx.Queue(),ctx.Queue()
-        self.proc=ctx.Process(target=worker_main,args=(self.commands,self.results),daemon=True)
+        self.commands,self.results,self.quote_results=ctx.Queue(),ctx.Queue(),ctx.Queue()
+        self.proc=ctx.Process(target=worker_main,args=(self.commands,self.results,self.quote_results),daemon=True)
         self.proc.start()
         self.worker_start=time.monotonic()
         self.connected=False
@@ -301,6 +304,8 @@ class Desk:
 
     def handle(self, packet):
         kind=packet['type']
+        if kind in ('quotes','option_quotes') and packet.get('received_ms'):
+            self.quote_processing_lag_ms=max(0,time.time()*1000-packet['received_ms'])
         if kind=='option_quotes':
             try:
                 self.options.handle_quotes(packet)
@@ -315,7 +320,7 @@ class Desk:
             self.request_calendars()
         elif kind=='request_started':
             if packet['id'] in self.pending:
-                self.pending[packet['id']]['started']=time.monotonic()
+                self.pending[packet['id']]['started']=packet.get('native_started',time.monotonic())
         elif kind=='quotes':
             self.handle_quotes(packet)
         elif kind in ('fatal','feed_error'):
@@ -325,6 +330,9 @@ class Desk:
             if not job or job['generation']!=self.generation:
                 return
             cmd=job['cmd']
+            seconds=packet.get('native_seconds',0.)
+            metric=self.request_metrics.setdefault(cmd['op'],dict(count=0,max_seconds=0.,last_seconds=0.))
+            metric.update(count=metric['count']+1,max_seconds=max(metric['max_seconds'],seconds),last_seconds=seconds)
             if cmd['op'].startswith('option_'):
                 try:
                     self.options.handle(cmd,packet)
@@ -465,24 +473,23 @@ class Desk:
         self.start_worker()
         saved=time.monotonic()
         while self.running:
+            backlog=False
             try:
-                for _ in range(500):
-                    try:
-                        packet=self.results.get_nowait()
-                    except queue.Empty:
-                        break
-                    self.handle(packet)
+                backlog=self.drain_packets()
                 clock=time.monotonic()
                 if self.reconnect_at:
                     if clock>=self.reconnect_at:
                         self.reconnect_at=0
                         self.start_worker()
                 elif not self.proc.is_alive():
-                    self.fail('Wind进程退出，重新连接并补齐历史')
+                    self.fail(f'Wind进程退出（exitcode={self.proc.exitcode}），重新连接并补齐历史')
                 elif not self.connected and clock-self.worker_start>25:
                     self.fail('Wind连接超时，请确认终端已经登录且具有API权限')
                 elif any(p['started'] and clock-p['started']>self.config['request_timeout_seconds'] for p in self.pending.values()):
-                    self.fail('Wind查询超时，重新连接后静默补数')
+                    timed_out=[p for p in self.pending.values() if p['started'] and clock-p['started']>self.config['request_timeout_seconds']]
+                    detail='；'.join(f"{p['cmd']['op']} {p['cmd'].get('root') or p['cmd'].get('code') or ''} "
+                                    f"{clock-p['started']:.1f}s" for p in timed_out)
+                    self.fail(f'Wind查询超时（{detail}），重新连接后静默补数')
                 if self.connected and not self.reconnect_at:
                     if self.watch and clock-self.last_snapshot>=self.config['snapshot_seconds'] and not any(p['cmd']['op']=='snapshot' for p in self.pending.values()):
                         self.submit('snapshot',codes=list(self.watch.values()))
@@ -511,9 +518,37 @@ class Desk:
                     saved=clock
             except Exception as exc:
                 self.fail(f'服务处理异常: {type(exc).__name__}: {exc}')
-            await asyncio.sleep(.1)
+            await asyncio.sleep(.005 if backlog else .1)
+
+    def drain_packets(self):
+        # Completion / watchdog messages cannot wait behind a flood of ticks.
+        # Keep all futures ticks in FIFO order (no coalescing of price touches).
+        for _ in range(500):
+            try: packet=self.results.get_nowait()
+            except queue.Empty: break
+            self.handle(packet)
+        deadline=time.monotonic()+.04
+        for _ in range(2000):
+            try: packet=self.quote_results.get_nowait()
+            except queue.Empty: break
+            self.handle(packet)
+            if time.monotonic()>=deadline:return True
+        return False
+
+    def close_worker_queues(self):
+        for name in ('commands','results','quote_results'):
+            q=getattr(self,name,None)
+            if q is not None and hasattr(q,'close'):
+                q.cancel_join_thread()
+                q.close()
 
     def snapshot(self):
+        clock=time.monotonic()
+        request_status=[dict(op=p['cmd']['op'],root=p['cmd'].get('root'),code=p['cmd'].get('code'),
+                             codes_count=len(p['cmd'].get('codes',[])),
+                             running=p['started'] is not None,
+                             elapsed_seconds=round(clock-p['started'],1) if p['started'] is not None else None)
+                        for p in self.pending.values()]
         instruments=[]
         for root in self.config['watchlist']:
             code=self.watch.get(root)
@@ -532,6 +567,9 @@ class Desk:
         return {'server_time':iso(now()),'sent_ms':time.time()*1000,'phase':phase,'feed_state':self.feed_state,
                 'last_error':self.last_error,'bootstrap_remaining':len(self.history_pending),'instruments':instruments,
                 'rules':{'version':self.config['version'],'hash':self.config['hash']},'metrics':self.metrics,'offline':self.offline,
+                'acquisition':{'pending':request_status,
+                               'native_requests':self.request_metrics,'quote_processing_lag_ms':self.quote_processing_lag_ms,
+                               'option_queue':[dict(op=j['op'],root=j.get('root'),codes_count=len(j.get('codes',[]))) for j in self.options.jobs]},
                 'options':{'version':self.options.config['version'],'contexts':{r:self.options.context(r) for r in self.config['watchlist']},'metrics':self.options.metrics,
                            'quotes':{code:{k:v for k,v in q.items() if k!='_field_seen'} for code,q in self.options.quotes.items()}}}
 
@@ -553,5 +591,6 @@ class Desk:
             if self.proc.is_alive():
                 self.proc.terminate()
                 self.proc.join(timeout=2)
+        self.close_worker_queues()
         self.store.set('last_observation',self.metrics)
         self.store.close()

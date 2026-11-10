@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from functools import lru_cache
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -61,11 +62,19 @@ def session(at: datetime, calendar: set[str], code='IM') -> str:
 
 
 def expected_end(at: datetime, timeframe: int, calendar: set[str], grace: int = 5, code='IM'):
+    # Completion boundaries are whole seconds. Cache the expensive calendar /
+    # native-label search within that second, without moving any boundary.
+    cutoff=(dt(at)-timedelta(seconds=grace)).replace(microsecond=0)
+    return _expected_end(cutoff,timeframe,tuple(sorted(calendar)),code)
+
+
+@lru_cache(maxsize=4096)
+def _expected_end(cutoff, timeframe, calendar, code):
     from .markets import labels, trading_windows
-    cutoff = dt(at)-timedelta(seconds=grace)
     # Option expiries require a longer calendar. Only the nearest future day
     # can own a current night session; don't materialize a year's future windows.
-    nearest=next((d for d in sorted(calendar) if d>cutoff.date().isoformat()),cutoff.date().isoformat())
+    today=cutoff.date().isoformat()
+    nearest=next((d for d in calendar if d>today),today)
     for day in sorted((d for d in calendar if d<=nearest), reverse=True):
         windows=trading_windows(day,code,calendar)
         if not windows or windows[0][0]>cutoff:

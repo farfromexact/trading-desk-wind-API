@@ -79,6 +79,22 @@ Git 不同步行情库、历史事件、登录状态或服务器进程。需要�
 
 ## 已知问题与证据边界
 
-Mac 独立 API 测试成功，前端可构建、HTTP 服务可启动，也观察到过行情同步页面，但连接会再次回到重连状态。
-持续采集尚不稳定，不作为已完成验收。SDK 首次认证、子进程启动和后续查询的超时需要逐项定位，不能仅从“已连接”文本判断完成。
-配置整理未改变服务25秒连接超时、45秒请求超时或行情质量门槛。实测记录见 `reports/mac-setup-2026-11-10.md`。
+早期Mac版本曾因查询超时反复重连。后续已增加请求操作/品种/执行时长及子进程退出码日志，并修复商品标的报价来源、增量盘口更新语义和采集队列/订阅压力。25秒连接与45秒请求超时不变。
+最新夜盘对照与持续观察结果见 [期权采集修复报告](../reports/options-commodity-feed-fix-2026-11-10.md)。原始安装报告保留当时的失败记录；不能只从“Wind已连接”判断验收。
+
+Windows接手时还需要盘中验证期货持续更新、各交易中期权品种有效估值、`metrics.restarts`、`acquisition.native_requests` 和 `quote_processing_lag_ms`。真实Windows SDK尚未复测，日盘指数期权也不能用Mac商品夜盘替代。
+
+若需要比较停用期权后的表现，在同一个PowerShell窗口中停止看板、设置变量后启动：
+
+```powershell
+.\stop.ps1
+$env:WIND_DESK_OPTIONS_DISABLED='1'
+.\start.ps1
+.\.venv\Scripts\python.exe scripts/observe_stability.py --mode futures-only --seconds 600 --output reports/windows-futures-only.json
+.\stop.ps1
+Remove-Item Env:WIND_DESK_OPTIONS_DISABLED
+.\start.ps1
+.\.venv\Scripts\python.exe scripts/observe_stability.py --mode options-on --seconds 900 --output reports/windows-options-on.json
+```
+
+观察脚本只读取本机HTTP，不启动Wind进程；每次使用新的输出文件名。环境变量只是临时排障开关，不提交本机设置。`zero_qualified`记录整组估值缺失次数，不代表每一个合约都应该可估值；深度虚值、宽价差与旧报价应继续显示缺失。

@@ -4,6 +4,8 @@ from collections import deque
 from copy import deepcopy
 from datetime import timedelta
 import json
+import os
+import platform
 import time
 
 from .domain import ROOT, dt, iso, now, quote_time, stable_id
@@ -21,6 +23,8 @@ class OptionsDesk:
     def __init__(self, desk):
         self.desk=desk
         self.config=json.loads((ROOT/'options-config.json').read_text(encoding='utf-8'))
+        if os.environ.get('WIND_DESK_OPTIONS_DISABLED')=='1':
+            self.config['enabled']=False
         self.config['fee_per_contract_each_side'].update(desk.store.get('option_fee_overrides',{}))
         self.config['hash']=stable_id(self.config)
         self.entries={}; self.quotes={}; self.views={}; self.rows={}
@@ -61,8 +65,22 @@ class OptionsDesk:
         e=self.entries.get(root,{})
         cmd=dict(op=op,root=root,future_contract=e.get('contract'),watch_epoch=e.get('epoch'),**kw)
         key=stable_id(cmd)
+        if op=='option_subscribe':
+            # The subscription covers all roots. Only its newest desired set
+            # matters; replaying superseded sets cancels useful live feeds.
+            self.jobs=deque(x for x in self.jobs if x['op']!='option_subscribe')
+            self.jobs.appendleft(dict(cmd,_key=key))
+            return
         if not any(x.get('_key')==key for x in self.jobs):
             self.jobs.append(dict(cmd,_key=key))
+
+    def underlying_quote(self, root):
+        e=self.entries[root]
+        # Commodity options reference this exact future, already subscribed by
+        # Desk. A slower options snapshot must not shadow its live quote.
+        if e['underlying']==e['contract']:
+            return self.desk.quotes.get(e['contract'],{})
+        return self.quotes.get(e['underlying'],{})
 
     def sync_watches(self):
         for root,contract in self.desk.watch.items():
@@ -80,7 +98,8 @@ class OptionsDesk:
                                     contracts=[],pool=[],daily=[],last_snapshot=0.,chain_loaded=False,error=None,updated=0)
             self.views.pop(root,None); self.rows.pop(root,None)
             self.context_history.pop(root,None)
-            self.queue('option_snapshot',root,codes=[underlying])
+            if underlying!=contract:
+                self.queue('option_snapshot',root,codes=[underlying])
             self.queue('option_chain',root,underlying=underlying,day=query_day)
             self.queue('option_daily',root,underlying=underlying,start=(now()-timedelta(days=100)).date().isoformat(),end=now().date().isoformat())
 
@@ -96,7 +115,7 @@ class OptionsDesk:
         op=cmd['op']; payload=packet.get('payload')
         if op=='option_chain':
             e['contracts']=payload['contracts']; e['chain_loaded']=True
-            q=self.quotes.get(e['underlying'],self.desk.quotes.get(e['contract'],{}))
+            q=self.underlying_quote(root)
             spot=finite(q.get('rt_last'),0)
             if spot>0:
                 e['pool']=self.pool_for(root,spot)
@@ -113,8 +132,17 @@ class OptionsDesk:
 
     def queue_snapshots(self, root):
         e=self.entries[root]
-        codes=[e['underlying']]+[x['code'] for x in e['pool']]
+        if any(j['op']=='option_snapshot' and j.get('root')==root for j in self.jobs):
+            return
+        # Futures already have their own feed. Keep index and option snapshots
+        # separate so an active underlying cannot stand in for an option batch.
+        if e['underlying']!=e['contract']:
+            self.queue('option_snapshot',root,codes=[e['underlying']])
+        spot=finite(self.underlying_quote(root).get('rt_last'),0)
+        codes=[x['code'] for x in sorted(e['pool'],key=lambda x:abs(x.get('strike',spot)-spot))]
         n=self.config['quote_batch_size']
+        if platform.system()=='Darwin':
+            n=min(n,self.config.get('mac_quote_batch_size',8))
         for i in range(0,len(codes),n):
             self.queue('option_snapshot',root,codes=codes[i:i+n])
         e['last_snapshot']=time.monotonic()
@@ -157,6 +185,13 @@ class OptionsDesk:
             seen=dict(previous.get('_field_seen',{}))
             seen.update({k:received for k in fields})
             merged.update(_field_seen=seen,received_at=received,received_ms=packet.get('received_ms'),market_time=iso(new) if new else None)
+            book_fields=('rt_bid1','rt_ask1','rt_bsize1','rt_asize1','rt_date','rt_time')
+            if packet.get('snapshot') and new and all(f in fields and finite(fields[f]) is not None for f in book_fields):
+                merged['_book_seed_day']=trading_day(new,root,cal)
+            if not packet.get('snapshot') and new and merged.get('_book_seed_day')==trading_day(new,root,cal):
+                # An ordered delta feed keeps unchanged seeded fields valid;
+                # their last-change timestamps are not last-confirmed times.
+                merged['_book_stream_seen']=received
             self.quotes[code]=merged
             self.track_future(code,merged,at)
             touched.add(root)
@@ -170,7 +205,7 @@ class OptionsDesk:
 
     def input_for(self, root, at=None):
         e=self.entries[root]
-        uq=self.quotes.get(e['underlying'],self.desk.quotes.get(e['underlying'],{}))
+        uq=self.underlying_quote(root)
         return deepcopy(dict(root=root,contract=e['contract'],contracts=e['pool'],quotes={x['code']:self.quotes.get(x['code'],{}) for x in e['pool']},
                              underlying_quote=uq,futures_quote=self.desk.quotes.get(e['contract'],{}),daily=e['daily'],
                              calendar=self.desk.calendar_for(root),at=iso(at or now()),
@@ -285,7 +320,7 @@ class OptionsDesk:
             if e.get('retry_at',float('inf'))<=clock:
                 cmd=e.pop('retry_cmd'); e.pop('retry_at')
                 self.queue(cmd['op'],root,**{k:v for k,v in cmd.items() if k not in ('id','op','root','future_contract','watch_epoch')})
-            q=self.quotes.get(e['underlying'],self.desk.quotes.get(e['contract'],{}))
+            q=self.underlying_quote(root)
             spot=finite(q.get('rt_last'),0)
             if not e['pool'] and e['contracts'] and spot>0:
                 e['pool']=self.pool_for(root,spot)
@@ -297,14 +332,10 @@ class OptionsDesk:
                 day=max((d for d in self.desk.calendar_for(root) if d<e['day']),default=e['day'])
                 self.queue('option_vendor',root,codes=[e['pool'][len(e['pool'])//2]['code']],day=day)
                 e['vendor_requested']=True
-        focus=set(INDEX_UNDERLYINGS[r] for r in self.entries if r in INDEX_UNDERLYINGS)
+        focus=set(INDEX_UNDERLYINGS[r] for r in self.entries if r in INDEX_UNDERLYINGS and phase(now(),r,self.desk.calendar_for(r))=='交易中')
         for root,e in self.entries.items():
-            spot=finite(self.quotes.get(e['underlying'],self.desk.quotes.get(e['contract'],{})).get('rt_last'),0)
-            focus.update(x['code'] for x in select_pool(e['pool'],spot,len({x['expiry'] for x in e['pool']}),5))
-            for expiry in {x['expiry'] for x in e['pool']}:
-                for side in (1,-1):
-                    wing=[x for x in self.rows.get(root,[]) if x['expiry']==expiry and x['side']==side and x.get('delta') is not None]
-                    focus.update(x['code'] for x in sorted(wing,key=lambda x:abs(abs(x['delta'])-.25))[:2])
+            if phase(now(),root,self.desk.calendar_for(root))=='交易中':
+                focus.update(x['code'] for x in e['pool'])
         for study in self.studies.values():
             if study['status'] in ('waiting','observing'):
                 if study['status']=='observing':
@@ -315,11 +346,7 @@ class OptionsDesk:
             root=next(iter(self.entries))
             self.queue('option_subscribe',root,codes=list(subscription))
             self.last_subscription=subscription
-        # At most one low-priority request outstanding, and never enqueue it
-        # ahead of pending native bars or the futures snapshot.
-        if self.jobs and not any(p['cmd']['op'].startswith('option_') for p in self.desk.pending.values()) and not self.desk.history_pending and not self.desk.refresh_pending:
-            job=self.jobs.popleft(); job.pop('_key',None)
-            self.desk.submit(job.pop('op'),**job)
+        self.dispatch_next()
         if clock-self.last_study>=5:
             self.observe_studies()
             self.last_study=clock
@@ -333,6 +360,15 @@ class OptionsDesk:
             self.desk.store.set('option_metrics',self.metrics)
             self.desk.store.set('option_studies',self.studies)
             self.last_save=clock
+
+    def dispatch_next(self):
+        # Admit one low-priority request during incremental refresh. The native
+        # worker still prioritizes queued futures work. Waiting for every bars
+        # response here can starve snapshots across consecutive refresh cycles.
+        # Initial historical bootstrap remains protected.
+        if self.jobs and not any(p['cmd']['op'].startswith('option_') for p in self.desk.pending.values()) and not self.desk.history_pending:
+            job=self.jobs.popleft(); job.pop('_key',None)
+            self.desk.submit(job.pop('op'),**job)
 
     def context(self, root):
         if root not in OPTION_ROOTS:

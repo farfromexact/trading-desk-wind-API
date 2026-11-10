@@ -77,9 +77,10 @@ def active_window(at, code, calendar, include_end=False):
     at = dt(at)
     # Nearest future trading day can own the current Friday/Saturday night.
     days = sorted(calendar)
-    nearby = [d for d in days if at.date().isoformat() <= d][:1]
-    if at.date().isoformat() in calendar and at.hour >= 20:
-        nearby += [d for d in days if d > at.date().isoformat()][:1]
+    today = at.date().isoformat()
+    nearby = [d for d in days if today <= d][:1]
+    if today in calendar and at.hour >= 20:
+        nearby += [d for d in days if d > today][:1]
     for day in nearby:
         for start, end in trading_windows(day, code, calendar):
             if start <= at < end or include_end and at == end:

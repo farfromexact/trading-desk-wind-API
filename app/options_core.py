@@ -42,9 +42,12 @@ def quote_issue(q, at, root, calendar, config, book=True):
             return '买卖挂单量不足1手'
         if (ask-bid)/((ask+bid)/2)>config['maximum_relative_spread']:
             return '买卖价差过宽'
+        stream_seen=q.get('_book_stream_seen')
+        live_book=(q.get('_book_seed_day')==trading_day(stamp,root,calendar) and stream_seen
+                   and 0<=(dt(at)-dt(stream_seen)).total_seconds()<=config['fresh_seconds'])
         for field in ('rt_bid1','rt_ask1','rt_bsize1','rt_asize1'):
             seen=q.get('_field_seen',{}).get(field)
-            if seen and (dt(at)-dt(seen)).total_seconds()>config['fresh_seconds']:
+            if seen and (dt(at)-dt(seen)).total_seconds()>config['fresh_seconds'] and not live_book:
                 return '盘口字段尚未同步更新'
     elif finite(q.get('rt_last'),0)<=0:
         return '标的价格无效'

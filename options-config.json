@@ -9,6 +9,7 @@
   "expiry_count": 2,
   "strikes_per_expiry": 21,
   "quote_batch_size": 60,
+  "mac_quote_batch_size": 8,
   "snapshot_seconds": 30,
   "fresh_seconds": 15,
   "max_skew_seconds": 10,
