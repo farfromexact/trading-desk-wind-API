@@ -19,6 +19,106 @@ CAL={(AT+timedelta(days=i)).date().isoformat() for i in range(-100,401) if (AT+t
 CONFIG=json.loads((ROOT/'options-config.json').read_text(encoding='utf-8'))
 
 
+@pytest.mark.parametrize('root,contract',[('SC','SC2612.INE'),('AU','AU2612.SHF'),('AG','AG2612.SHF')])
+def test_commodity_valuation_uses_live_future_not_stale_option_snapshot(tmp_path,root,contract):
+    d=Desk(tmp_path,offline=True); o=d.options
+    try:
+        _,rows,_=market_fixture('AG')
+        for row in rows:
+            row.update(root=root,underlying=contract)
+        o.entries[root]=dict(contract=contract,underlying=contract,pool=rows,daily=[])
+        o.quotes={r['code']:r['quote'] for r in rows}
+        o.quotes[contract]=quote(90,at=AT-timedelta(minutes=10))
+        d.quotes[contract]=quote(100)
+        d.calendars={'INE':CAL,'SHFE':CAL}
+        source=o.input_for(root,AT)
+        assert source['underlying_quote']==source['futures_quote']
+        context,_=analyse(**source)
+        assert context['qualified']>0 and context['basis']==0
+        # Inputs used in frozen research must not change with the live feed.
+        d.quotes[contract]['rt_last']=101
+        assert source['underlying_quote']['rt_last']==100
+        d.quotes.clear()
+        assert o.underlying_quote(root)=={}  # never revive an old cached price
+    finally:
+        d.stop()
+
+
+def test_index_option_keeps_index_as_underlying(tmp_path):
+    d=Desk(tmp_path,offline=True); o=d.options
+    try:
+        o.entries['IM']=dict(contract='IM2612.CFE',underlying='000852.SH')
+        d.quotes['IM2612.CFE']=quote(102)
+        o.quotes['000852.SH']=quote(100)
+        assert o.underlying_quote('IM')['rt_last']==100
+    finally:
+        d.stop()
+
+
+@pytest.mark.parametrize('root,underlying,contract',[
+    ('SC','SC2612.INE','SC2612.INE'),('IM','000852.SH','IM2612.CFE')])
+def test_option_snapshot_batches_do_not_mix_underlying_with_options(tmp_path,root,underlying,contract):
+    d=Desk(tmp_path,offline=True); o=d.options
+    try:
+        o.entries[root]=dict(contract=contract,underlying=underlying,epoch=1,
+                             pool=[{'code':'OPTION1'},{'code':'OPTION2'}])
+        o.queue_snapshots(root)
+        batches=[j['codes'] for j in o.jobs]
+        assert ['OPTION1','OPTION2'] in batches
+        assert all(underlying not in b or b==[underlying] for b in batches)
+        assert ([underlying] in batches)==(root=='IM')
+    finally:
+        d.stop()
+
+
+@pytest.mark.parametrize('system,expected',[('Darwin',[8,8,5]),('Windows',[21])])
+def test_snapshot_batch_limits_are_platform_specific(tmp_path,monkeypatch,system,expected):
+    d=Desk(tmp_path,offline=True);o=d.options
+    monkeypatch.setattr('app.options_service.platform.system',lambda:system)
+    try:
+        o.entries['SC']=dict(contract='SC2612.INE',underlying='SC2612.INE',epoch=1,
+                            pool=[{'code':f'OPTION{i}'} for i in range(21)])
+        o.queue_snapshots('SC')
+        assert [len(j['codes']) for j in o.jobs]==expected
+    finally:d.stop()
+
+
+def test_pending_subscription_changes_coalesce_without_dropping_snapshots(tmp_path):
+    d=Desk(tmp_path,offline=True);o=d.options
+    try:
+        o.entries['IM']=dict(contract='IM2612.CFE',epoch=1)
+        o.queue('option_subscribe','IM',codes=['old'])
+        o.queue('option_snapshot','IM',codes=['keep'])
+        o.queue('option_subscribe','IM',codes=['new'])
+        assert [(x['op'],x['codes']) for x in o.jobs]==[
+            ('option_subscribe',['new']),('option_snapshot',['keep'])]
+    finally:d.stop()
+
+
+def test_option_dispatch_during_incremental_refresh_remains_single_and_blocks_bootstrap(tmp_path):
+    import queue
+    d=Desk(tmp_path,offline=True); o=d.options
+    d.commands=queue.Queue()
+    try:
+        o.entries['SC']=dict(contract='SC2612.INE',epoch=1)
+        o.queue('option_snapshot','SC',codes=['SC2612C590.INE'])
+        o.queue('option_snapshot','SC',codes=['SC2612P590.INE'])
+        d.history_pending={'initial'}
+        o.dispatch_next()
+        assert d.commands.empty()
+        d.history_pending.clear()
+        d.refresh_pending={'ongoing-minute-refresh'}
+        o.dispatch_next()
+        assert d.commands.get_nowait()['op']=='option_snapshot'
+        o.dispatch_next()
+        assert d.commands.empty() and len(o.jobs)==1
+        d.pending.clear()  # previous low-priority request completed
+        o.dispatch_next()
+        assert d.commands.get_nowait()['codes']==['SC2612P590.INE']
+    finally:
+        d.stop()
+
+
 def quote(last,bid=None,ask=None,at=AT):
     return dict(rt_last=last,rt_bid1=last-.01 if bid is None else bid,rt_ask1=last+.01 if ask is None else ask,
                 rt_bsize1=10,rt_asize1=10,rt_vol=0,rt_oi=25,rt_date=int(at.strftime('%Y%m%d')),rt_time=int(at.strftime('%H%M%S')))
@@ -307,3 +407,69 @@ def test_candidate_discarded_if_state_changes_during_calculation(tmp_path,monkey
     result=asyncio.run(o.candidate_view('IM',holding_days=5))
     assert result['candidates']==[] and '发生变化' in result['reasons'][0]
     d.stop()
+
+
+def test_seeded_delta_book_keeps_unchanged_fields_but_not_stale_or_invalid_quotes(tmp_path,monkeypatch):
+    d=Desk(tmp_path,offline=True);o=d.options;code='MO2611-C-6500.CFE'
+    d.calendar=CAL;d.calendars={'CFFEX':CAL}
+    o.entries['IM']=dict(underlying='000852.SH',pool=[dict(code=code)])
+    monkeypatch.setattr('app.options_service.now',lambda:AT)
+    def send(fields,when,snapshot=False):
+        o.handle_quotes(dict(records={code:fields},received_at=iso(when),snapshot=snapshot))
+    try:
+        send(quote(3,at=AT-timedelta(seconds=30)),AT-timedelta(seconds=30),True)
+        send(dict(rt_time=int(AT.strftime('%H%M%S'))),AT)
+        assert quote_issue(o.quotes[code],AT,'IM',CAL,CONFIG) is None
+        assert quote_issue(o.quotes[code],AT+timedelta(seconds=16),'IM',CAL,CONFIG)
+        invalid=dict(o.quotes[code],_book_seed_day='2026-11-09')
+        assert '字段' in quote_issue(invalid,AT,'IM',CAL,CONFIG)
+        send(dict(rt_ask1=None),AT)
+        assert quote_issue(o.quotes[code],AT,'IM',CAL,CONFIG)
+        o.reset()
+        assert not o.quotes
+    finally:d.stop()
+
+
+def test_subscription_changes_preserve_unaffected_groups_and_cancel_void_return():
+    from types import SimpleNamespace
+    from app.wind_worker import update_option_subscriptions
+    class Wind:
+        def __init__(self):self.added=[];self.cancelled=[]
+        def wsq(self,codes,fields,func):
+            self.added.append(codes);return SimpleNamespace(RequestID=len(self.added))
+        def cancelRequest(self,ident):self.cancelled.append(ident)
+    w=Wind();groups={};check=lambda r,label:r
+    update_option_subscriptions(w,['a','b'],groups,None,check)
+    update_option_subscriptions(w,['a','b','c'],groups,None,check)
+    update_option_subscriptions(w,['a','b','c'],groups,None,check)
+    assert w.added==['a,b','c'] and w.cancelled==[]
+    update_option_subscriptions(w,['b','c'],groups,None,check)
+    assert w.cancelled==[1] and w.added==['a,b','c','b']
+    assert set().union(*groups)=={'b','c'}
+
+
+def test_control_responses_are_processed_before_quote_backlog(tmp_path):
+    import queue
+    d=Desk(tmp_path,offline=True);seen=[]
+    d.results=queue.Queue();d.quote_results=queue.Queue()
+    d.results.put('completed');d.quote_results.put('tick1');d.quote_results.put('tick2')
+    d.handle=seen.append
+    try:
+        d.drain_packets()
+        assert seen==['completed','tick1','tick2']
+    finally:d.stop()
+
+
+def test_serialization_retains_callback_receipt_time():
+    from types import SimpleNamespace
+    packet=serialize_quotes(SimpleNamespace(ErrorCode=0,Codes=[],Fields=[],Data=[]),received_ms=AT.timestamp()*1000)
+    assert packet['received_at']==iso(AT)
+
+
+def test_expected_end_cache_keeps_grace_boundary_and_calendar_changes():
+    before=dt('2026-11-10T09:36:04.999999+08:00')
+    boundary=dt('2026-11-10T09:36:05+08:00')
+    assert expected_end(before,5,CAL)=='2026-11-09T15:00:00+08:00'
+    assert expected_end(boundary,5,CAL)=='2026-11-10T09:35:00+08:00'
+    shortened=CAL-{'2026-11-10'}
+    assert expected_end(boundary,5,shortened)=='2026-11-09T15:00:00+08:00'

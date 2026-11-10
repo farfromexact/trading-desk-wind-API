@@ -21,11 +21,17 @@ async def lifespan(app):
     desk=Desk(offline=os.environ.get('WIND_DESK_OFFLINE')=='1')
     app.state.desk=desk
     task=asyncio.create_task(desk.run())
-    yield
-    desk.running=False
-    await task
-    await desk.options.close()
-    desk.stop()
+    try:
+        yield
+    finally:
+        desk.running=False
+        try:
+            await task
+        finally:
+            try:
+                await desk.options.close()
+            finally:
+                desk.stop()
 
 
 app=FastAPI(title='Wind 实时机会工作台',lifespan=lifespan)
@@ -187,7 +193,7 @@ async def stream(request:Request):
     cursor=recent[0]['seq'] if recent else 0
     async def generate():
         nonlocal cursor
-        while not await request.is_disconnected():
+        while desk.running and not await request.is_disconnected():
             rows=desk.store.events(1000,after=cursor)
             if rows:
                 cursor=max(e['seq'] for e in rows)
