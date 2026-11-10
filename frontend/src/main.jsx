@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { CandlestickSeries, createChart, createSeriesMarkers, LineStyle } from 'lightweight-charts';
 import './style.css';
+import { opportunityAtmosphere } from './opportunity-atmosphere';
 import { mergeChartBars, followLatestRange, structureMarkers, spaceMarkerLabels } from './chart-data';
 
 import { contractRoot, shortContract, formatPrice, formatNumber, currentOpportunity } from './market-format';
@@ -60,7 +61,7 @@ function Chart({contract,market,tf,bars,levels,structures,quote,op,focus,focusTi
     const c=createChart(element.current,{
       autoSize:true,height:465,
       layout:{background:{color:'#141a21'},textColor:'#7f90a2',fontFamily:'Segoe UI, Microsoft YaHei, sans-serif',fontSize:11,attributionLogo:true},
-      grid:{vertLines:{color:'#1c242e'},horzLines:{color:'#1c242e'}},
+      grid:{vertLines:{visible:false},horzLines:{visible:false}},
       rightPriceScale:{borderColor:'#29333f',scaleMargins:{top:.12,bottom:.09}},
       timeScale:{borderColor:'#29333f',timeVisible:true,secondsVisible:false,rightOffset:8,
         tickMarkFormatter:(ts,type)=>new Date(ts*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',...(type<=2?{month:'2-digit',day:'2-digit'}:{hour:'2-digit',minute:'2-digit',hour12:false})})},
@@ -89,8 +90,21 @@ function Chart({contract,market,tf,bars,levels,structures,quote,op,focus,focusTi
     lines.current.forEach(line=>series.current.removePriceLine(line));lines.current=[];
     const list=[];
     const current=quote?.rt_last||bars.at(-1)?.close;
+    const levelStyles={
+      '前日高点':{color:'#88b9ed',lineStyle:LineStyle.Dashed},
+      '前日低点':{color:'#88b9ed',lineStyle:LineStyle.Dashed},
+      '波段高点':{color:'#b49ade',lineStyle:LineStyle.LargeDashed},
+      '波段低点':{color:'#b49ade',lineStyle:LineStyle.LargeDashed},
+      EQH:{color:'#d1aa71',lineStyle:LineStyle.Dotted},
+      EQL:{color:'#d1aa71',lineStyle:LineStyle.Dotted},
+      '区间上沿':{color:'#71b9b5',lineStyle:LineStyle.SparseDotted},
+      '区间下沿':{color:'#71b9b5',lineStyle:LineStyle.SparseDotted},
+    };
     const closest=[...(levels||[])].sort((a,b)=>Math.abs(a.price-current)-Math.abs(b.price-current)).slice(0,5);
-    closest.forEach(p=>list.push({price:p.price,color:'#526b85',title:p.name,lineStyle:LineStyle.Dashed,lineWidth:1,axisLabelVisible:false}));
+    closest.forEach(p=>list.push({price:p.price,
+      ...(levelStyles[p.name]||{color:'#88b9ed',lineStyle:LineStyle.Dashed}),
+      title:p.name==='EQH'?'EQH 等高':p.name==='EQL'?'EQL 等低':p.name,
+      lineWidth:1,axisLabelVisible:true}));
     if(op?.entry){
       list.push({price:op.entry,color:'#d8bd7a',title:'触发',lineWidth:1,lineStyle:LineStyle.Solid,axisLabelVisible:true},
         {price:op.stop,color:'#b57780',title:'失效',lineWidth:1,lineStyle:LineStyle.Dashed,axisLabelVisible:true});
@@ -168,6 +182,17 @@ function App(){
     if(navigator.locks)await navigator.locks.request('wind-desk-sound',play);else play();
   }
   const {state,events,connected}=useFeed(alert);
+  const [atmospherePreview,setAtmospherePreview]=useState(null);
+  useEffect(()=>{
+    if(!atmospherePreview)return;
+    const timer=setTimeout(()=>setAtmospherePreview(null),30000);
+    return()=>clearTimeout(timer);
+  },[atmospherePreview]);
+  const atmosphere=opportunityAtmosphere(state,connected,replayOpen);
+  const atmosphereTone=atmospherePreview||atmosphere.tone;
+  const atmosphereSignals=atmosphereTone==='action'?atmosphere.actionable:atmosphere.watching;
+  const atmosphereRoots=[...new Set(atmosphereSignals.map(x=>x.root))].join(' · ');
+
   const item=state?.instruments.find(x=>x.root===root);
   const contract=item?.contract||root;
   const price=x=>formatPrice(x,item?.market);
@@ -191,10 +216,17 @@ function App(){
     setBusy(true);setNotice('');
     try{await api('watchlist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({root,contract:auto?null:choice.trim()})});setEdit(false);}catch(e){setNotice(e.message);}finally{setBusy(false);}
   }
-  return <div className="app">
+  return <div className={'app atmosphere-'+atmosphereTone}>
+    <div className="atmosphere-light" aria-hidden="true"/><div className="atmosphere-edge" aria-hidden="true"/>
     <header><div className="brand"><span className="brand-mark">W<span>·</span></span><div><h1>实时机会工作台</h1><span>PRICE ACTION / 股指 · 贵金属 · 原油 · 国债</span></div></div><div className="header-right"><span className={'connection '+(connected?'ok':'')}><i/>{connected?'本机服务在线':'正在连接服务'}</span><button onClick={enableSound} className={'sound '+(sound?'enabled':'')}>{sound?'◖ 声音已开启':'◖ 启用声音'}</button><button onClick={()=>{if(sound)beep();else enableSound();}} className="subtle">测试声音</button></div></header>
     <div className="topline"><div><span className="live-tag">{state?.phase||'连接中'}</span><span>{state?.feed_state||'等待本机行情服务'}{state?.bootstrap_remaining>0?' · 剩余 '+state.bootstrap_remaining+' 项':''}</span></div><span>{fullTime(state?.server_time)} <span className="muted">上海</span></span></div>
     {(!connected||state?.last_error||notice||state?.offline)&&<div className="banner">{notice||state?.last_error||(state?.offline?'离线回放模式 · 所有提醒保持静默':'页面与服务连接中断，等待恢复')} {notice&&<button onClick={()=>setNotice('')}>关闭</button>}</div>}
+    {atmosphereTone!=='idle'&&<div className={'atmosphere-status '+(atmospherePreview?'is-preview':'')} role="status" aria-live="polite">
+      <span className="atmosphere-beacon" aria-hidden="true"/>
+      <div><span className="atmosphere-eyebrow">{atmospherePreview?'灯效预览 · 30秒后恢复实时':'全市场机会雷达'}</span><strong>{atmosphereTone==='action'?'已收盘确认 · 关注触发条件':'关注中 · 等待收盘确认'}</strong></div>
+      <span className="atmosphere-detail">{atmospherePreview?'仅预览视觉效果，不代表出现真实机会':atmosphereTone==='action'?`${atmosphereRoots} · ${atmosphere.actionable.filter(x=>x.status==='confirmed').length} 个待触发 / ${atmosphere.actionable.filter(x=>x.status==='triggered').length} 个已触价`:`${atmosphereRoots} · ${atmosphere.watching.length} 个关注机会`}</span>
+      {atmospherePreview&&<button onClick={()=>setAtmospherePreview(null)}>恢复实时</button>}
+    </div>}
     <div className="radar-grid">{(state?.instruments||[]).map(x=><button key={x.root} aria-label={'选择'+x.market.name+' '+x.root} className={'radar '+(root===x.root?'active':'')} onClick={()=>{setRoot(x.root);setSelectedOp(null);setEdit(false);}}><div className="radar-top"><span><b>{x.root}</b><small>{x.market.name}</small></span><span className={'badge '+(x.ready?'live':'neutral')} title={x.status}>{x.status}</span></div><div className="radar-mid"><strong>{formatPrice(x.quote.rt_last,x.market)}</strong><span className={'regime '+x.regime.state}>{x.regime.label}</span></div><div className="radar-bottom"><span>{x.contract||'解析合约中'}</span><span>行情 {time(x.market_time)}</span></div><div className="radar-note" title={x.note}>{x.note}</div></button>)}</div>
     <OptionsEnvironment root={root} context={state?.options?.contexts?.[root]} onOpen={()=>setOptionsOpen(true)}/>
     <main><section className="chart-panel panel"><div className="panel-head"><div className="chart-title"><h2>{shortContract(contract)} <span>价格结构</span></h2><button className="text-button" onClick={()=>{setChoice(item?.contract||'');setEdit(!edit);}}>切换合约 ↗</button></div><div className="segments">{[1,5,15].map(n=><button key={n} className={tf===n?'active':''} onClick={()=>setTf(n)}>{n}分钟</button>)}</div></div>
@@ -207,7 +239,7 @@ function App(){
     <OptionsWorkbench root={root} opportunityId={currentOp?.id} context={state?.options?.contexts?.[root]}/>
     <section className="panel event-panel"><div className="panel-head"><h2>事件记录 <span className="muted">保留当时依据</span></h2><div className="segments"><button className={logFilter==='today'?'active':''} onClick={()=>setLogFilter('today')}>今日</button><button className={logFilter==='all'?'active':''} onClick={()=>setLogFilter('all')}>全部记录</button></div></div><div className="event-scroll"><table><thead><tr><th>确认 / 生成时间</th><th>合约</th><th>事件</th><th>说明</th><th>来源</th></tr></thead><tbody>{logs.length?logs.map(e=><tr key={e.id} onClick={()=>e.opportunity&&selectOp(e.opportunity)} className={e.opportunity?'clickable':''}><td>{logFilter==='all'?fullTime(e.known_at):time(e.known_at)}</td><td>{shortContract(e.contract)||'系统'}</td><td><span className={'badge '+(e.opportunity?.status||'neutral')}>{e.opportunity?names[e.opportunity.status]:({structure:'结构变化',preview:'接近区域',revision:'数据修订',data_error:'数据异常',option_data_error:'期权数据异常',system:'系统状态'}[e.kind]||e.kind)}</span></td><td>{e.message}</td><td className="muted">{e.historical?'历史回放':'实时'}</td></tr>):<tr><td colSpan="5" className="empty-row">尚无事件，等待数据同步</td></tr>}</tbody></table></div></section>
     <div className="replay-entry"><div><b>复核历史，而非推定成交</b><span>保留 Wind 原生K线标签；完整性确认通常晚于标签1分钟。夜盘归入下一交易日；首根15分钟完成前使用上一交易日背景。</span></div><button disabled={!item?.contract} onClick={()=>setReplayOpen(true)}>打开 {root} 历史回放 ↗</button></div>
-    <footer><span>Wind 实时数据 · 本机运行 · <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">Charts by TradingView</a></span><span>规则 {state?.rules.version||'v1.0'} · 初始规则待验证 · 不展示推定胜率</span></footer>
+    <footer><div className="atmosphere-preview-controls"><span>页面灯效</span><button onClick={()=>setAtmospherePreview('watch')}>预览橙色关注</button><button onClick={()=>setAtmospherePreview('action')}>预览红色确认</button></div><span>Wind 实时数据 · 本机运行 · <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">Charts by TradingView</a></span><span>规则 {state?.rules.version||'v1.0'} · 初始规则待验证 · 不展示推定胜率</span></footer>
     {replayOpen&&<ReplayDialog contract={contract} market={item?.market} onClose={()=>setReplayOpen(false)}/>}
     {optionsOpen&&<OptionsDetails root={root} liveQuotes={state?.options?.quotes} contextRevision={state?.options?.contexts?.[root]?.generated_at} onClose={()=>setOptionsOpen(false)}/>}
   </div>;
