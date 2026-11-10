@@ -1,9 +1,12 @@
 """Check the local WindPy installation and make one small data request."""
 import sys
+import platform
 
 
 def main():
     print(f"Python: {sys.executable}", flush=True)
+    print(f"Platform: {platform.system()} {platform.machine()}", flush=True)
+    print('Loading official WindPy; first connection may require a separate Wind login.', flush=True)
     try:
         import WindPy
         from WindPy import w
