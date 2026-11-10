@@ -2,7 +2,20 @@
 
 本机 Wind 行情驱动的中文交易看板：15分钟识别环境、5分钟确认机会、实时价格预警。包含顺势突破回踩和区间假突破反转，输出参考触发价、结构失效价、目标与价格空间盈亏比。
 
-## 日常启动
+## 跨平台维护与接手
+
+**Windows 和 macOS 共用这个仓库、同一套业务代码。** 两个平台分别安装依赖和官方 Wind SDK，使用各自启动器；不复制 `.venv`、数据库或登录配置。
+
+| 平台 | 安装/更新依赖 | 启动 | 停止 | 当前验证状态 |
+| --- | --- | --- | --- | --- |
+| Windows | `install.ps1` | `Start Dashboard.cmd` / `start.ps1` | `Stop Dashboard.cmd` / `stop.ps1` | 有原版实测记录；本次安装器调整待 Windows 复验 |
+| macOS | `install-mac.command` | `Start Dashboard Mac.command` | 启动终端按 Control+C | 独立 Wind API 实测通过；看板持续连接尚未验收 |
+
+**Windows 明日接手：先读 [跨平台维护说明](docs/CROSS_PLATFORM.md)。** 确保 Mac 的改动已推送后再拉取，停止旧服务、重跑安装器、验证 Wind 连接和测试，再启动。Codex 会从根目录 [AGENTS.md](AGENTS.md) 读取平台约定、交接状态和验证要求。
+
+拉取业务代码后通常需要重启；前端修改需要重新构建；依赖变更需要重跑对应安装器。不要建立两个仓库或长期 Windows/Mac 分支。Git 仅同步源码、依赖清单、共用配置和文档，不同步本机行情数据。
+
+## Windows 日常启动
 
 1. 在这台电脑启动并登录 Wind 金融终端。
 2. 双击本目录 **Start Dashboard.cmd**，浏览器打开 **http://127.0.0.1:8765**。
@@ -154,19 +167,41 @@ SQLite `option_records`追加存储链、盘口、环境、信号原始输入、
 
 ## 安装与维护
 
-当前已安装并构建。重建需要64位Python 3.12、Node.js（验证版本24）、Wind终端及Python API权限：
+### macOS
+
+Mac 需要从 Mac App Store 安装官方 **Wind API** 应用（与 Wind 金融终端是两个应用）。
+官方 Python 模块位于 `/Applications/Wind API.app/Contents/python/WindPy.py`，
+它加载同一应用包中的原生动态库；不要仅从第三方包源安装同名模块。
+
+安装 Python 3.12 和 Node.js 后，运行 `./install-mac.command`，或在 Finder 中双击它。
+两端安装器共用 `scripts/configure_wind.py`，仅为本项目 `.venv` 写入 `WindPy.pth`，不修改系统 Python。
+SDK 目录优先使用 `--wind-python-dir` 参数或 `WIND_PYTHON_DIR` 环境变量，其次保留已有有效配置，最后尝试系统默认路径。
+可用 `.venv/bin/python scripts/configure_wind.py --check` 只检查路径（不等于验证连接）。
+运行 `.venv/bin/python wind_check.py` 验证接口；首次调用可能弹出独立的 Wind 登录框，
+需用自己的 Wind 账号登录。终端已登录不代表 Python 接口已完成认证。
+若每次新进程都要求登录，可自行在官方登录框选择自动登录；现有服务连接超过25秒会重启行情进程，
+因此首次人工认证建议先通过上述独立检查完成。若看板仍持续显示“正在连接 Wind”，需检查它新弹出的登录框。
+
+双击 **Start Dashboard Mac.command** 后访问 `http://127.0.0.1:8765`。
+保持终端窗口打开，按 Control+C 停止服务。Windows 启停脚本不适用于 macOS。
+在受限执行环境中，原生 SDK 需要访问用户目录（例如 `~/.Wind`）和网络；
+若加载成功后原生进程退出，应在普通终端运行连接检查以区分权限限制与 SDK 问题。
+
+### Windows
+
+每台新电脑都需要安装并构建。需要64位Python 3.12、Node.js（Windows原验证版本24，Mac本机25）、Wind终端及Python API权限：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-安装使用 requirements-lock.txt 和 frontend/package-lock.json。WindPy引用位于 .venv/Lib/site-packages/WindPy.pth，当前路径为：
+安装使用 requirements-lock.txt 和 frontend/package-lock.json。WindPy引用保存在本机 `.venv/Lib/site-packages/WindPy.pth`，默认查找当前用户的：
 
 ```text
-C:\Users\macon\Wind\Wind.NET.Client\WindNET\x64
+%USERPROFILE%\Wind\Wind.NET.Client\WindNET\x64
 ```
 
-Wind安装位置变化时更新此文件。基础连接检查保留：
+Wind安装位置变化时设置 `WIND_PYTHON_DIR` 并重跑安装器，或调用共享配置脚本；不要提交本机 `.pth`。基础连接检查保留：
 
 ```powershell
 .\.venv\Scripts\python.exe .\wind_check.py
