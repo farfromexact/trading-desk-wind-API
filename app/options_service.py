@@ -9,7 +9,7 @@ import platform
 import time
 
 from .domain import ROOT, dt, iso, now, quote_time, stable_id
-from .markets import phase, trading_day
+from .markets import phase, trading_day, at_time
 from .markets import market
 from .options_core import analyse, candidates, finite, futures_reference, horizon_dates, quote_issue, select_pool, trading_days_left
 from .options_wind import INDEX_UNDERLYINGS, OPTION_ROOTS
@@ -27,6 +27,7 @@ class OptionsDesk:
             self.config['enabled']=False
         self.config['fee_per_contract_each_side'].update(desk.store.get('option_fee_overrides',{}))
         self.config['hash']=stable_id(self.config)
+        self.snapshot_received={}
         self.entries={}; self.quotes={}; self.views={}; self.rows={}
         self.jobs=deque(); self.task=None; self.task_meta=None; self.confirmations=deque()
         self.last_dispatch=0.; self.last_subscription=(); self.last_study=0.; self.last_save=0.
@@ -49,6 +50,7 @@ class OptionsDesk:
     def reset(self):
         self.entries.clear(); self.jobs.clear(); self.last_subscription=()
         self.quotes.clear()
+        self.snapshot_received.clear()
         self.continuous={'day':0.,'night':0.}
         for v in self.views.values():
             v.update(ready=False,status='连接恢复后等待重新同步')
@@ -113,6 +115,9 @@ class OptionsDesk:
             e['retry_cmd']=cmd
             return
         op=cmd['op']; payload=packet.get('payload')
+        if op=='option_snapshot' and payload and payload.get('missing_codes'):
+            self.metrics['snapshot_timeouts']=self.metrics.get('snapshot_timeouts',0)+1
+            self.metrics['last_snapshot_timeout']=dict(root=root,at=packet['received_at'],**payload)
         if op=='option_chain':
             e['contracts']=payload['contracts']; e['chain_loaded']=True
             q=self.underlying_quote(root)
@@ -139,13 +144,27 @@ class OptionsDesk:
         if e['underlying']!=e['contract']:
             self.queue('option_snapshot',root,codes=[e['underlying']])
         spot=finite(self.underlying_quote(root).get('rt_last'),0)
-        codes=[x['code'] for x in sorted(e['pool'],key=lambda x:abs(x.get('strike',spot)-spot))]
+        at=now(); cal=self.desk.calendar_for(root)
+        codes=[x['code'] for x in sorted(e['pool'],key=lambda x:abs(x.get('strike',spot)-spot))
+               if (not x.get('expiry') or at_time(x['expiry'],'15:00')>at)
+               and self.needs_snapshot(x['code'],root,at,cal)]
         n=self.config['quote_batch_size']
         if platform.system()=='Darwin':
             n=min(n,self.config.get('mac_quote_batch_size',8))
         for i in range(0,len(codes),n):
             self.queue('option_snapshot',root,codes=codes[i:i+n])
         e['last_snapshot']=time.monotonic()
+
+    def needs_snapshot(self, code, root, at, calendar):
+        q=self.quotes.get(code,{})
+        stream=q.get('_book_stream_seen'); full=self.snapshot_received.get(code)
+        if not full or (dt(at)-dt(full)).total_seconds()>=self.config.get('full_snapshot_seconds',120):
+            return True
+        if not stream or not 0<=(dt(at)-dt(stream)).total_seconds()<=self.config['fresh_seconds']:
+            return True
+        if q.get('_book_seed_day')!=trading_day(at,root,calendar):
+            return True
+        return quote_issue(q,at,root,calendar,self.config) is not None
 
     def pool_for(self, root, spot):
         contracts=self.entries[root]['contracts']; cal=self.desk.calendar_for(root)
@@ -186,8 +205,12 @@ class OptionsDesk:
             seen.update({k:received for k in fields})
             merged.update(_field_seen=seen,received_at=received,received_ms=packet.get('received_ms'),market_time=iso(new) if new else None)
             book_fields=('rt_bid1','rt_ask1','rt_bsize1','rt_asize1','rt_date','rt_time')
-            if packet.get('snapshot') and new and all(f in fields and finite(fields[f]) is not None for f in book_fields):
+            # A single complete callback is also an atomic book initialization.
+            # Never assemble an initialization from unrelated partial packets.
+            if new and all(f in fields and finite(fields[f]) is not None for f in book_fields):
                 merged['_book_seed_day']=trading_day(new,root,cal)
+                if packet.get('snapshot') or all(f in fields for f in ('rt_last','rt_vol','rt_oi')):
+                    self.snapshot_received[code]=received
             if not packet.get('snapshot') and new and merged.get('_book_seed_day')==trading_day(new,root,cal):
                 # An ordered delta feed keeps unchanged seeded fields valid;
                 # their last-change timestamps are not last-confirmed times.
@@ -335,7 +358,7 @@ class OptionsDesk:
         focus=set(INDEX_UNDERLYINGS[r] for r in self.entries if r in INDEX_UNDERLYINGS and phase(now(),r,self.desk.calendar_for(r))=='交易中')
         for root,e in self.entries.items():
             if phase(now(),root,self.desk.calendar_for(root))=='交易中':
-                focus.update(x['code'] for x in e['pool'])
+                focus.update(x['code'] for x in e['pool'] if not x.get('expiry') or at_time(x['expiry'],'15:00')>now())
         for study in self.studies.values():
             if study['status'] in ('waiting','observing'):
                 if study['status']=='observing':
@@ -367,7 +390,9 @@ class OptionsDesk:
         # response here can starve snapshots across consecutive refresh cycles.
         # Initial historical bootstrap remains protected.
         if self.jobs and not any(p['cmd']['op'].startswith('option_') for p in self.desk.pending.values()) and not self.desk.history_pending:
-            job=self.jobs.popleft(); job.pop('_key',None)
+            # Keep each root's order, but live-market work precedes closed-market backfill.
+            job=min(self.jobs,key=lambda j:0 if j['op']=='option_subscribe' else 1 if phase(now(),j['root'],self.desk.calendar_for(j['root']))=='交易中' else 2)
+            self.jobs.remove(job); job.pop('_key',None)
             self.desk.submit(job.pop('op'),**job)
 
     def context(self, root):

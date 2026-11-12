@@ -15,6 +15,7 @@ def main():
     parser.add_argument('--interval',type=float,default=2)
     parser.add_argument('--mode',choices=['futures-only','options-on'],required=True)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--roots',nargs='+',choices=['AG','AU','SC','IM','IF','IH'],help='Explicit validation scope; does not change collection. Omit to validate every active covered root.')
     args=parser.parse_args()
     if args.seconds<1 or args.interval<=0:parser.error('Positive duration and interval required')
     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -26,6 +27,8 @@ def main():
             try:
                 with opener.open('http://127.0.0.1:8765/api/state',timeout=5) as response:s=json.load(response)
                 active=[i['root'] for i in s['instruments'] if i['phase']=='交易中' and i['root'] in ('AG','AU','SC','IM','IF','IH')]
+                observed_active=active
+                if args.roots is not None:active=[r for r in active if r in args.roots]
                 contexts=s['options']['contexts']
                 mode_ok=all(contexts[r].get('status')=='期权模块已关闭' for r in active) if args.mode=='futures-only' else bool(active) and all(contexts[r].get('qualified',0)>0 for r in active)
                 if warm_until is None and not s['bootstrap_remaining'] and mode_ok:
@@ -33,7 +36,8 @@ def main():
                 row=dict(at=s['server_time'],response_ms=round((time.monotonic()-before)*1000,2),
                          measured=warm_until is not None,started_at=s['metrics']['started_at'],
                          restarts=s['metrics']['restarts'],feed=s['feed_state'],error=s['last_error'],
-                         active=active,options={r:{k:contexts[r].get(k) for k in ('qualified','ready','status','excluded','market_time','generated_at','expiries')} for r in active},
+                         active=active,observed_active=observed_active,options={r:{k:contexts[r].get(k) for k in ('qualified','ready','status','excluded','market_time','generated_at','expiries')} for r in observed_active},
+                         instruments=[{k:i.get(k) for k in ('root','contract','phase','ready','status','age_seconds','last_bar')} for i in s['instruments']],
                          pending=s.get('acquisition',{}).get('pending',[]),
                          quote_lag_ms=s.get('acquisition',{}).get('quote_processing_lag_ms'),
                          native_requests=s.get('acquisition',{}).get('native_requests'),quote_updates=s['metrics']['quote_updates'])
@@ -51,8 +55,9 @@ def main():
     measured=[r for r in rows if r.get('measured')]
     ok=[r for r in measured if 'response_ms' in r]
     roots=sorted({x for r in ok for x in r['active']})
-    result=dict(mode=args.mode,requested_seconds=args.seconds,warmup_completed=warm_until is not None,
+    result=dict(mode=args.mode,selected_roots=args.roots,requested_seconds=args.seconds,warmup_completed=warm_until is not None,
                 measurement_seconds=round(time.monotonic()-warm_until,2) if warm_until else 0,
+                excluded_active_roots=sorted({r for row in rows for r in row.get('observed_active',[]) if r not in row.get('active',[])}),
                 samples=len(measured),http_failures=len(measured)-len(ok),
                 started_at=ok[0]['started_at'] if ok else None,
                 distinct_server_starts=sorted({r['started_at'] for r in ok}),

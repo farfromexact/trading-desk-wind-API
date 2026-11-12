@@ -35,6 +35,7 @@
   "quote_stale_seconds": 15,
   "bar_grace_seconds": 5,
   "history_days": 5,
+  "idle_minute_refresh_seconds": 300,
   "snapshot_seconds": 5,
   "request_timeout_seconds": 45
 }

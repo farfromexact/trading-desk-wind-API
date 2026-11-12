@@ -473,3 +473,112 @@ def test_expected_end_cache_keeps_grace_boundary_and_calendar_changes():
     assert expected_end(boundary,5,CAL)=='2026-11-10T09:35:00+08:00'
     shortened=CAL-{'2026-11-10'}
     assert expected_end(boundary,5,shortened)=='2026-11-09T15:00:00+08:00'
+
+
+def test_snapshot_budget_only_skips_healthy_seeded_stream_until_audit(tmp_path):
+    d=Desk(tmp_path,offline=True);o=d.options;code='MO2611-C-6500.CFE'
+    try:
+        q=dict(quote(3),_book_seed_day='2026-11-10',_book_stream_seen=iso(AT))
+        o.quotes[code]=q
+        assert o.needs_snapshot(code,'IM',AT,CAL)
+        o.snapshot_received[code]=iso(AT-timedelta(seconds=30))
+        assert not o.needs_snapshot(code,'IM',AT,CAL)
+        o.snapshot_received[code]=iso(AT-timedelta(seconds=120))
+        assert o.needs_snapshot(code,'IM',AT,CAL)
+        o.snapshot_received[code]=iso(AT)
+        for invalid in ({'_book_seed_day':'2026-11-09'},{'_book_stream_seen':iso(AT-timedelta(seconds=16))},{'rt_bid1':0},{'rt_time':135900},{'rt_asize1':0}):
+            o.quotes[code]=dict(q,**invalid)
+            assert o.needs_snapshot(code,'IM',AT,CAL)
+        o.reset()
+        assert not o.snapshot_received
+    finally:d.stop()
+
+
+def test_snapshot_queue_repairs_only_bad_codes_and_audits_healthy_pool(tmp_path,monkeypatch):
+    d=Desk(tmp_path,offline=True);o=d.options
+    monkeypatch.setattr('app.options_service.now',lambda:AT)
+    d.calendars={'SHFE':CAL}
+    try:
+        codes=['AG2612C100.SHF','AG2612P100.SHF']
+        o.entries['AG']=dict(contract='AG2612.SHF',underlying='AG2612.SHF',epoch=1,pool=[dict(code=c,strike=100) for c in codes])
+        for code in codes:
+            o.quotes[code]=dict(quote(3),_book_seed_day='2026-11-10',_book_stream_seen=iso(AT))
+            o.snapshot_received[code]=iso(AT-timedelta(seconds=30))
+        o.queue_snapshots('AG')
+        assert not o.jobs
+        o.quotes[codes[1]]['rt_bid1']=0
+        o.queue_snapshots('AG')
+        assert [j['codes'] for j in o.jobs]==[[codes[1]]]
+        o.jobs.clear()
+        o.snapshot_received[codes[0]]=iso(AT-timedelta(seconds=120))
+        o.queue_snapshots('AG')
+        assert [j['codes'] for j in o.jobs]==[codes]
+    finally:d.stop()
+
+
+def test_rejected_or_incomplete_snapshots_do_not_reset_full_audit_clock(tmp_path,monkeypatch):
+    d=Desk(tmp_path,offline=True);o=d.options;code='MO2611-C-6500.CFE'
+    d.calendar=CAL;d.calendars={'CFFEX':CAL}
+    o.entries['IM']=dict(underlying='000852.SH',pool=[dict(code=code)])
+    monkeypatch.setattr('app.options_service.now',lambda:AT)
+    try:
+        o.handle_quotes(dict(records={code:quote(3)},received_at=iso(AT),snapshot=True))
+        assert o.snapshot_received[code]==iso(AT)
+        o.handle_quotes(dict(records={code:quote(3,at=AT-timedelta(seconds=1))},received_at=iso(AT+timedelta(seconds=1)),snapshot=True))
+        assert o.snapshot_received[code]==iso(AT)
+        o.handle_quotes(dict(records={code:{'rt_time':140002}},received_at=iso(AT+timedelta(seconds=2)),snapshot=True))
+        assert o.snapshot_received[code]==iso(AT)
+    finally:d.stop()
+
+
+def test_one_complete_live_callback_seeds_book_but_combined_partial_packets_do_not(tmp_path,monkeypatch):
+    d=Desk(tmp_path,offline=True);o=d.options;code='MO2611-C-6500.CFE'
+    d.calendar=CAL;d.calendars={'CFFEX':CAL}
+    o.entries['IM']=dict(underlying='000852.SH',pool=[dict(code=code)])
+    monkeypatch.setattr('app.options_service.now',lambda:AT)
+    try:
+        full=quote(3)
+        o.handle_quotes(dict(records={code:{k:v for k,v in full.items() if k!='rt_asize1'}},received_at=iso(AT)))
+        o.handle_quotes(dict(records={code:{'rt_asize1':10}},received_at=iso(AT)))
+        assert not o.quotes[code].get('_book_seed_day')
+        assert o.needs_snapshot(code,'IM',AT,CAL)
+        o.handle_quotes(dict(records={code:full},received_at=iso(AT)))
+        assert o.quotes[code]['_book_seed_day']=='2026-11-10'
+        assert not o.needs_snapshot(code,'IM',AT,CAL)
+        assert quote_issue(o.quotes[code],AT+timedelta(seconds=16),'IM',CAL,CONFIG)
+    finally:d.stop()
+
+
+def test_expired_pool_remains_visible_but_does_not_queue_live_snapshots(tmp_path,monkeypatch):
+    d=Desk(tmp_path,offline=True);o=d.options
+    monkeypatch.setattr('app.options_service.now',lambda:AT)
+    pool=[dict(code='expired',strike=100,expiry='2026-11-09'),dict(code='today',strike=100,expiry='2026-11-10')]
+    o.entries['SC']=dict(contract='SC2612.INE',underlying='SC2612.INE',epoch=1,pool=pool)
+    try:
+        o.queue_snapshots('SC')
+        assert [j['codes'] for j in o.jobs]==[['today']]
+        assert o.entries['SC']['pool']==pool
+        o.jobs.clear()
+        monkeypatch.setattr('app.options_service.now',lambda:AT.replace(hour=15))
+        o.queue_snapshots('SC')
+        assert not o.jobs
+    finally:d.stop()
+
+
+def test_live_market_backfill_precedes_closed_market_with_subscription_first(tmp_path,monkeypatch):
+    import queue
+    d=Desk(tmp_path,offline=True);o=d.options;d.commands=queue.Queue()
+    d.calendar=CAL;d.calendars={'CFFEX':CAL,'SHFE':CAL}
+    monkeypatch.setattr('app.options_service.now',lambda:AT.replace(hour=21))
+    try:
+        for root,contract in [('IM','IM2612.CFE'),('AG','AG2612.SHF')]:
+            o.entries[root]=dict(contract=contract,epoch=1)
+        o.queue('option_snapshot','IM',codes=['closed'])
+        o.queue('option_chain','AG',underlying='AG2612.SHF',day='2026-11-10')
+        o.queue('option_snapshot','AG',codes=['live'])
+        o.queue('option_subscribe','IM',codes=['live'])
+        got=[]
+        while o.jobs:
+            o.dispatch_next();got.append(d.commands.get_nowait());d.pending.clear()
+        assert [(j['op'],j['root']) for j in got]==[('option_subscribe','IM'),('option_chain','AG'),('option_snapshot','AG'),('option_snapshot','IM')]
+    finally:d.stop()

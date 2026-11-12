@@ -68,3 +68,12 @@ def test_options_endpoints_and_fee_authorization(client):
     client.post('/api/telemetry',json={'delay_ms':50,'option_delay_ms':2500})
     metrics=client.get('/api/options/research').json()['metrics']
     assert metrics['ui_over_2s']==1 and metrics['ui_samples']==1
+
+
+def test_chart_interest_rejects_unknown_contracts_and_remote_writes(client):
+    assert client.post('/api/chart-interest',json={'contract':'unknown'}).status_code==400
+    assert client.post('/api/chart-interest',json={'contract':'IM2612.CFE'},headers={'Origin':'https://external.example'}).status_code==403
+    app.state.desk.watch={'IM':'IM2612.CFE'}
+    assert client.post('/api/chart-interest',json={'contract':'IM2612.CFE'}).status_code==200
+    assert 'IM2612.CFE' in app.state.desk.minute_demand
+    assert not app.state.desk.pending  # offline never starts Wind
