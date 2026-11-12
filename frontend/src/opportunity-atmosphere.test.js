@@ -20,3 +20,8 @@ test('disconnect, replay, offline, closed session and incomplete data suppress l
   for(const overrides of [{ready:false},{phase:'已收盘'}])assert.equal(opportunityAtmosphere(state([op('confirmed')],overrides),true).tone,'idle');
   assert.equal(opportunityAtmosphere(state([]),true).tone,'idle');
 });
+
+test('current initialized watching setup lights orange without promoting historical confirmations',()=>{
+  assert.equal(opportunityAtmosphere(state([{...op('watching'),historical:true}]),true).tone,'watch');
+  assert.equal(opportunityAtmosphere(state([{...op('watching'),historical:true,trading_day:'2026-11-10'}]),true).tone,'idle');
+});

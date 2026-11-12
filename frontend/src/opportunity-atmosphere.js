@@ -7,7 +7,7 @@ export function opportunityAtmosphere(state, connected, replay = false) {
   for (const instrument of state?.instruments || []) {
     if (!instrument.ready || instrument.phase !== '交易中') continue;
     for (const op of instrument.opportunities || []) {
-      if (op.historical || op.contract !== instrument.contract || !currentOpportunity(op, instrument)) continue;
+      if ((op.historical && op.status !== 'watching') || op.contract !== instrument.contract || !currentOpportunity(op, instrument)) continue;
       const signal = { ...op, root: instrument.root };
       if (op.status === 'watching') watching.push(signal);
       if (['confirmed', 'triggered'].includes(op.status) && Number.isFinite(op.entry) && Number.isFinite(op.stop)) actionable.push(signal);

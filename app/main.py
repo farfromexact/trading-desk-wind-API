@@ -60,6 +60,19 @@ async def bars(request:Request,contract:str,timeframe:int=5):
     return [b.json() for b in desk.available_bars(contract,timeframe)]
 
 
+class ChartInterest(BaseModel):
+    contract:str
+
+
+@app.post('/api/chart-interest')
+async def chart_interest(body:ChartInterest,request:Request):
+    desk=request.app.state.desk
+    if body.contract not in desk.watch.values():
+        raise HTTPException(400,'仅支持当前监测合约')
+    desk.touch_minute_chart(body.contract)
+    return {'ok':True}
+
+
 @app.get('/api/events')
 async def events(request:Request,limit:int=150):
     return request.app.state.desk.store.events(min(max(limit,1),1000))

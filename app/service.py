@@ -54,6 +54,8 @@ class Desk:
         self.reconnect_at=0
         self.last_snapshot=self.last_refresh=self.last_health=time.monotonic()
         self.last_refresh_slot=None
+        self.minute_refresh={}
+        self.minute_demand={}
         self.last_quote_saved={}
         self.gap_cache={}
         self.running=True
@@ -64,6 +66,7 @@ class Desk:
 
     def start_worker(self):
         self.options.reset()
+        self.minute_refresh.clear()
         self.close_worker_queues()
         ctx=mp.get_context('spawn')
         self.commands,self.results,self.quote_results=ctx.Queue(),ctx.Queue(),ctx.Queue()
@@ -320,7 +323,10 @@ class Desk:
             self.request_calendars()
         elif kind=='request_started':
             if packet['id'] in self.pending:
-                self.pending[packet['id']]['started']=packet.get('native_started',time.monotonic())
+                self.pending[packet['id']].update(started=packet.get('native_started',time.monotonic()),waiting_callback=False)
+        elif kind=='request_deferred':
+            if packet['id'] in self.pending:
+                self.pending[packet['id']].update(started=None,waiting_callback=True)
         elif kind=='quotes':
             self.handle_quotes(packet)
         elif kind in ('fatal','feed_error'):
@@ -333,6 +339,9 @@ class Desk:
             seconds=packet.get('native_seconds',0.)
             metric=self.request_metrics.setdefault(cmd['op'],dict(count=0,max_seconds=0.,last_seconds=0.))
             metric.update(count=metric['count']+1,max_seconds=max(metric['max_seconds'],seconds),last_seconds=seconds)
+            if cmd['op']=='bars':
+                counts=metric.setdefault('by_timeframe',{})
+                tf=str(cmd['timeframe']); counts[tf]=counts.get(tf,0)+1
             if cmd['op'].startswith('option_'):
                 try:
                     self.options.handle(cmd,packet)
@@ -382,6 +391,8 @@ class Desk:
                         if not completed_bar(b,at,self.config['bar_grace_seconds'],cal) and dt(b.end)-timedelta(minutes=b.timeframe)>=dt(cmd['start']):
                             self.preview.on_native(b,packet['received_at'],at,cal)
                     bars=[b for b in bars if completed_bar(b,at,self.config['bar_grace_seconds'],cal) and dt(b.end)-timedelta(minutes=b.timeframe)>=dt(cmd['start'])]
+                    if cmd.get('minute_target') is not None:
+                        self.minute_refresh[code]=dict(target=cmd['minute_target'],at=at)
                     self.preview.finalized(bars)
                     existing=self.engines.get(cmd['code'])
                     engine_bars=(existing.bars if cmd['timeframe']==5 else existing.context) if existing else []
@@ -427,6 +438,23 @@ class Desk:
             self.submit('calendar',calendar=name,start=(today-timedelta(days=120)).date().isoformat(),end=(today+timedelta(days=400)).date().isoformat())
         self.calendar_refresh_day=today.date().isoformat()
 
+    def minute_refresh_due(self, code, at):
+        last=self.minute_refresh.get(code)
+        if not last:return True
+        if self.minute_demand.get(code,0)>time.monotonic():
+            return last['target']!=expected_end(at,1,self.calendar_for(code),self.config['bar_grace_seconds'],code)
+        return (at-last['at']).total_seconds()>=self.config.get('idle_minute_refresh_seconds',300)
+
+    def touch_minute_chart(self, code):
+        self.minute_demand[code]=time.monotonic()+90
+        at=now();cal=self.calendar_for(code)
+        if (self.offline or not self.connected or code not in self.watch.values() or code in self.loading
+                or session(at,cal,code)!='交易中' or at.second<self.config['bar_grace_seconds']):return
+        if self.minute_refresh_due(code,at) and not any(p['cmd'].get('code')==code and p['cmd'].get('timeframe')==1 for p in self.pending.values()):
+            ident=self.submit('bars',code=code,timeframe=1,start=(at-timedelta(minutes=45)).strftime('%Y-%m-%d %H:%M:%S'),
+                              end=at.strftime('%Y-%m-%d %H:%M:%S'),minute_target=expected_end(at,1,cal,self.config['bar_grace_seconds'],code))
+            self.refresh_pending.add(ident)
+
     def schedule_refresh(self):
         at=now()
         if at.second < self.config['bar_grace_seconds']:
@@ -440,7 +468,9 @@ class Desk:
             if not any(a<=at<=b+timedelta(minutes=3) for a,b in windows):
                 continue
             for tf in (15,5,1):
-                ident=self.submit('bars',code=code,timeframe=tf,start=(at-timedelta(minutes=45)).strftime('%Y-%m-%d %H:%M:%S'),end=at.strftime('%Y-%m-%d %H:%M:%S'))
+                if tf==1 and not self.minute_refresh_due(code,at):
+                    continue
+                ident=self.submit('bars',code=code,timeframe=tf,start=(at-timedelta(minutes=45)).strftime('%Y-%m-%d %H:%M:%S'),end=at.strftime('%Y-%m-%d %H:%M:%S'),minute_target=expected_end(at,1,cal,self.config['bar_grace_seconds'],code) if tf==1 else None)
                 self.refresh_pending.add(ident)
         self.last_refresh=time.monotonic()
         self.last_refresh_slot=at.strftime('%Y-%m-%d %H:%M')
@@ -546,7 +576,7 @@ class Desk:
         clock=time.monotonic()
         request_status=[dict(op=p['cmd']['op'],root=p['cmd'].get('root'),code=p['cmd'].get('code'),
                              codes_count=len(p['cmd'].get('codes',[])),
-                             running=p['started'] is not None,
+                             running=p['started'] is not None,waiting_callback=p.get('waiting_callback',False),
                              elapsed_seconds=round(clock-p['started'],1) if p['started'] is not None else None)
                         for p in self.pending.values()]
         instruments=[]

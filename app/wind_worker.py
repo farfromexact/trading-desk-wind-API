@@ -7,10 +7,12 @@ import time
 import traceback
 import heapq
 import threading
+import platform
 from datetime import datetime, timedelta
 
 from .domain import Bar, TZ, dt, iso, now
 from .options_wind import OPTION_FIELDS, dispatch
+from .wind_snapshots import AsyncOptionSnapshots
 
 
 def update_option_subscriptions(w, desired, groups, callback, check):
@@ -76,10 +78,12 @@ def worker_main(commands, results, quote_results=None):
             raise RuntimeError(f'{label}: Wind错误 {r.ErrorCode}: {r.Data}')
         return r
 
+    snapshots=AsyncOptionSnapshots(w,check,serialize_quotes,results,quote_results)
     try:
         check(w.start(waitTime=10), '连接')
         results.put({'type': 'connected'})
         while True:
+            snapshots.poll()
             try:
                 cmd=commands.get(timeout=.01 if jobs else .05)
                 counter+=1
@@ -131,6 +135,9 @@ def worker_main(commands, results, quote_results=None):
                         except (ValueError, TypeError, IndexError, KeyError):
                             continue
                 elif op == 'option_snapshot':
+                    if platform.system()=='Darwin':
+                        snapshots.start(cmd)
+                        continue
                     quote_results.put(serialize_quotes(check(w.wsq(','.join(cmd['codes']),OPTION_FIELDS),'期权快照'),'options',True))
                     payload=None
                 elif op == 'option_subscribe':
@@ -151,6 +158,7 @@ def worker_main(commands, results, quote_results=None):
     finally:
         done.set()
         try:
+            snapshots.close()
             for subscription in list(subscriptions.values())+list(option_subscriptions.values()):
                 w.cancelRequest(subscription)
             w.stop()
