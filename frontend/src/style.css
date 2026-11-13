@@ -54,3 +54,4 @@ footer{flex-wrap:wrap;align-items:center}
 .op-card.signal-action{border-left:3px solid #ff5c73;box-shadow:inset 3px 0 25px #ff415320}
 @keyframes signal-ring{from{transform:scale(.6);opacity:.8}to{transform:scale(1.8);opacity:0}}
 @media(prefers-reduced-motion:reduce){.atmosphere-beacon::after{animation:none;opacity:.4}}
+.op-evidence{margin-top:20px;border-top:1px solid #334155;padding-top:18px;line-height:1.7}.op-evidence h3{margin:0 0 16px}.evidence-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.evidence-steps>div,.evidence-now{padding:14px;background:rgba(100,116,139,.09);border:1px solid #334155;border-radius:10px}.op-evidence h4{margin:0 0 8px;color:#cbd5e1;font-size:13px}.op-evidence p{font-size:13px;margin:6px 0;overflow-wrap:anywhere}.evidence-now{margin-top:12px}.thesis{scroll-margin-top:24px}

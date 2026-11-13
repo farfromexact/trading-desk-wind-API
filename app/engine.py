@@ -10,6 +10,7 @@ from .markets import day_close, market, trading_day
 
 REGIMES = {'bull': '多头趋势', 'bear': '空头趋势', 'range': '震荡', 'transition': '过渡', 'warming': '数据预热'}
 ACTIVE = {'watching', 'confirmed', 'filtered'}
+OCCUPYING = {'watching', 'confirmed'}
 
 
 def ema(values, period):
@@ -106,6 +107,13 @@ class Engine:
         tick = self.c['tick_size']
         return round((ceil(value/tick-1e-8) if direction>0 else floor(value/tick+1e-8))*tick, 8)
 
+    def review_regime(self):
+        for op in self.opportunities.values():
+            required = ('bull' if op['direction']==1 else 'bear') if op['setup']=='pullback' else 'range'
+            if op['status']=='confirmed' and self.regime['state']!=required:
+                op['regime_at_review']=deepcopy(self.regime)
+                self.transition(op,'invalidated','确认后15分钟环境已改变，取消待触发机会；不代表账户平仓')
+
     def start_op(self, setup, direction, level, a, bounds, b):
         key = stable_id(self.c['hash'], self.contract, setup, direction, b.end, level['id'])
         if key in self.opportunities:
@@ -120,6 +128,7 @@ class Engine:
                   extreme=b.low if direction==1 else b.high, touched=False, near=False,
                   entry=None, stop=None, targets=[], rr=None, source_bars=[b.json()],
                   rule_version=self.c['version'], rule_hash=self.c['hash'], regime=deepcopy(self.regime),
+                  regime_at_creation=deepcopy(self.regime), rule_parameters=deepcopy({k:self.c[k] for k in ('breakout_body','confirmation_body','close_quarter','minimum_rr','pullback_bars','return_bars','entry_expiry_bars')}),
                   historical=self.historical, **self.opportunity_metadata(b.end))
         self.opportunities[key] = op
         self.transition(op, 'watching', '等待突破位回踩及强K线确认' if setup=='pullback' else '等待价格收回关键位，再观察下一根跟随')
@@ -147,7 +156,7 @@ class Engine:
             return
         if op['setup']=='failed_break':
             low, high = op['bounds']
-            targets = [{'price':(low+high)/2, 'label':'冻结区间中点'}, {'price':high if d==1 else low, 'label':'冻结区间另一侧'}]
+            targets = [{'price':(low+high)/2, 'label':'冻结区间中点','source':'structural'}, {'price':high if d==1 else low, 'label':'冻结区间另一侧','source':'structural'}]
         else:
             ordered = sorted((p for p in available_levels if d*(p['price']-entry)>tick/2), key=lambda p:d*(p['price']-entry))
             unique=[]
@@ -157,20 +166,22 @@ class Engine:
             targets=[]
             for i,multiple in enumerate((2,3)):
                 if i<len(unique):
-                    targets.append({'price':unique[i]['price'], 'label':unique[i]['name']})
+                    targets.append({'price':unique[i]['price'], 'label':unique[i]['name'],'source':'structural'})
                 else:
                     price=entry+d*multiple*risk
                     if targets and d*(price-targets[-1]['price'])<=0:
                         price=targets[-1]['price']+d*risk
-                    targets.append({'price':self.rounded(price,d), 'label':f'{round(abs(price-entry)/risk,2)}R 测算目标'})
+                    targets.append({'price':self.rounded(price,d), 'label':f'{round(abs(price-entry)/risk,2)}R 测算目标','source':'synthetic'})
         for t in targets:
             t['price'] = self.rounded(t['price'], -d)
         rr=d*(targets[0]['price']-entry)/risk
-        op.update(entry=entry,stop=stop,risk=risk,targets=targets,rr=rr,historical=self.historical,confirmed_index=len(self.bars)-1,
+        op.update(entry=entry,stop=stop,risk=risk,targets=targets,rr=rr,planned_rr=rr,target_source=targets[0]['source'],regime_at_confirmation=deepcopy(self.regime),historical=self.historical,confirmed_index=len(self.bars)-1,
                   confirmed_at=self.known_at,confirmation_bar=b.end,
                   expiry_bars=self.c['entry_expiry_bars'],remaining_bars=self.c['entry_expiry_bars'])
         op['source_bars'].append(b.json())
-        if rr < self.c['minimum_rr']:
+        if targets[0]['source']=='synthetic':
+            self.transition(op,'filtered','缺少前方结构目标；R倍数仅作情景测算，不据此通过空间筛选')
+        elif rr < self.c['minimum_rr']:
             self.transition(op,'filtered',f'目标空间不足：T1仅 {rr:.2f}R，低于 {self.c["minimum_rr"]}R')
         else:
             self.transition(op,'confirmed','5分钟收盘确认；等待触发价，盈亏比未扣费用与滑点')
@@ -193,6 +204,7 @@ class Engine:
                     self.transition(op,'invalidated','历史K线覆盖失效价；不推定成交')
                     continue
                 if hit:
+                    op['regime_at_trigger']=deepcopy(self.regime)
                     self.transition(op,'triggered','历史K线覆盖触发价，具体触价时刻未知；不代表成交')
                     continue
             if op['status'] in ('confirmed','filtered'):
@@ -217,6 +229,7 @@ class Engine:
                     continue
                 if b.low<=level+tol and b.high>=level-tol:
                     if not op['touched']:
+                        op['pullback_bar']=b.json()
                         op['extreme']=b.low if d==1 else b.high
                     op['touched']=True
                 if op['touched']:
@@ -239,7 +252,7 @@ class Engine:
                     else:
                         self.transition(op,'expired','收回关键位后下一根未出现有效跟随')
                 elif d*(b.close-level)>=0 and age<self.c['return_bars']:
-                    op.update(returned_index=index,return_close=b.close)
+                    op.update(returned_index=index,return_close=b.close,return_bar=b.json())
                     op['reason']='已收回关键位，等待下一根同向强K线'
                 elif age>=self.c['return_bars']-1:
                     self.transition(op,'expired','2根5分钟K线内未收回关键位')
@@ -274,6 +287,7 @@ class Engine:
             if not self.context or b.end>self.context[-1].end:
                 self.context.append(b)
                 self.regime=classify(self.context,self.c)
+                self.review_regime()
             return
         if b.timeframe!=5 or self.bars and b.end<=self.bars[-1].end:
             return
@@ -313,12 +327,12 @@ class Engine:
             bounds=(min(x.low for x in previous_bars),max(x.high for x in previous_bars))
             for d,p in breaks:
                 if self.regime['state']==('bull' if d==1 else 'bear') and strong(b,d,self.c['breakout_body'],self.c['close_quarter']):
-                    if not any(o['status'] in ACTIVE and o['setup']=='pullback' and o['direction']==d for o in self.opportunities.values()):
+                    if not any(o['status'] in OCCUPYING and o['setup']=='pullback' and o['direction']==d for o in self.opportunities.values()):
                         self.start_op('pullback',d,p,a,bounds,b)
             if self.regime['state']=='range':
                 low,high=bounds
                 for d,side in [(-1,'high'),(1,'low')]:
-                    if any(o['status'] in ACTIVE and o['setup']=='failed_break' and o['direction']==d for o in self.opportunities.values()):
+                    if any(o['status'] in OCCUPYING and o['setup']=='failed_break' and o['direction']==d for o in self.opportunities.values()):
                         continue
                     eligible=[]
                     for p in available_levels:
@@ -333,7 +347,7 @@ class Engine:
                         p=min(eligible,key=lambda p:abs(b.close-p['price']))
                         op=self.start_op('failed_break',d,p,a,bounds,b)
                         if d*(b.close-p['price'])>=0:
-                            op.update(returned_index=len(self.bars)-1,return_close=b.close,reason='已收回关键位，等待下一根同向强K线')
+                            op.update(returned_index=len(self.bars)-1,return_close=b.close,return_bar=b.json(),reason='已收回关键位，等待下一根同向强K线')
         self.update_pivots(b,a)
         state=self.regime['state']
         self.note={'warming':'等待足够的15分钟历史数据','transition':'处于过渡状态，暂不确认机会','range':'观察区间边缘的假突破与跟随','bull':'多头环境，等待向上突破及回踩','bear':'空头环境，等待向下突破及回踩'}[state]
@@ -344,6 +358,7 @@ class Engine:
     def on_quote(self, price, stamp, known_at):
         self.known_at=known_at
         self.historical=False
+        self.review_regime()
         a=atr(self.bars,self.c['atr_period'])
         for preview in self.previews.values():
             if preview['status']=='watching' and (self.regime['state']!='range' or abs(price-preview['level'])>2*preview['tolerance']):
@@ -352,7 +367,7 @@ class Engine:
             recent=self.bars[-self.c['range_bars']:]
             low,high=min(b.low for b in recent),max(b.high for b in recent)
             for d,side in [(-1,'high'),(1,'low')]:
-                if any(o['status'] in ACTIVE and o['direction']==d for o in self.opportunities.values()):
+                if any(o['status'] in OCCUPYING and o['direction']==d for o in self.opportunities.values()):
                     continue
                 choices=[]
                 for level in self.levels():
@@ -365,6 +380,11 @@ class Engine:
                     level=min(choices,key=lambda x:abs(price-x['price']))
                     ident=stable_id(self.c['hash'],self.contract,'proximity',self.bars[-1].end,d,level['price'])
                     if ident not in self.previews:
+                        # A new bar/nearby level is an updated proximity alert,
+                        # not another independent directional opportunity.
+                        for old in self.previews.values():
+                            if old['status']=='watching' and old['direction']==d:
+                                self.transition(old,'expired','同方向接近区域预警已更新，请查看最新预警；并非新增独立机会')
                         preview=dict(id=ident,contract=self.contract,setup='failed_break',direction=d,status='watching',preview_only=True,
                                      signal_bar=self.bars[-1].end,created_at=known_at,updated_at=known_at,level=level['price'],level_name=level['name'],
                                      level_known_at=level.get('known_at'),tolerance=self.c['zone_atr']*a,atr=a,bounds=(low,high),near=True,
@@ -390,6 +410,7 @@ class Engine:
                 elif op['status']=='confirmed' and d*(price-op['entry'])>=0:
                     op['touch_at']=stamp
                     op['touch_price']=price
+                    op['regime_at_trigger']=deepcopy(self.regime)
                     self.transition(op,'triggered','实时价格已触价；不代表实际成交')
 
     def expire_session(self, at, reason='已收盘，未触发机会过期',historical=False):

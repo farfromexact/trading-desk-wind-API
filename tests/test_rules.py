@@ -31,6 +31,7 @@ def seeded(state='bull',wide=False):
 
 def pullback(direction=1):
     e=seeded('bull' if direction==1 else 'bear')
+    e.previous=[{'id':'objective','name':'前日高点' if direction==1 else '前日低点','side':'high' if direction==1 else 'low','price':110 if direction==1 else 90,'known_at':e.bars[-1].end}]
     e.pivots[('internal','high' if direction==1 else 'low')]={'id':'known-level','price':100,'known_at':iso(bar_finished_at(e.bars[-1])),'occurred_at':e.bars[-4].end,'crossed':False}
     bars=[candle(20,100,104,99.8,103.8),candle(21,100.1,101,99.6,100.9)]
     for b in bars:
@@ -206,3 +207,84 @@ def test_last_bar_cannot_leave_new_candidate_active_overnight():
     e.on_bar(Bar(CODE,5,'2026-11-09T15:00:00+08:00',100,100.8,99.8,100.5,10),historical=True)
     assert op['status']=='expired'
     assert all(x['historical'] for x in e.events if x.get('opportunity',{}).get('status')=='expired')
+
+
+def test_synthetic_target_cannot_pass_rr_gate():
+    e,op=pullback()
+    e.confirm(op,e.bars[-1],[])
+    assert op['rr']==pytest.approx(2)
+    assert op['status']=='filtered'
+    assert op['target_source']=='synthetic'
+    assert all(t['source']=='synthetic' for t in op['targets'])
+
+
+@pytest.mark.parametrize('direction',[1,-1])
+def test_regime_change_blocks_live_trigger(direction):
+    e,op=pullback(direction)
+    e.regime={'state':'range','label':'震荡'}
+    stamp=iso(datetime.fromisoformat(op['confirmed_at'])+timedelta(seconds=2))
+    e.on_quote(op['entry'],stamp,stamp)
+    assert op['status']=='invalidated'
+    assert 'touch_at' not in op
+    assert op['regime_at_creation']['state']==('bull' if direction==1 else 'bear')
+
+
+def test_closed_15m_regime_change_cancels_pending_not_triggered():
+    e,op=pullback()
+    e.on_bar(candle(22,tf=15),historical=False)
+    assert op['status']=='invalidated'
+    e,op=pullback()
+    stamp=iso(datetime.fromisoformat(op['confirmed_at'])+timedelta(seconds=2))
+    e.on_quote(op['entry'],stamp,stamp)
+    assert op['regime_at_trigger']['state']=='bull'
+    e.on_bar(candle(22,tf=15),historical=False)
+    assert op['status']=='triggered'  # no inferred account exit
+
+
+def test_filtered_releases_slot_before_three_bar_expiry():
+    e,op=pullback()
+    e.confirm(op,e.bars[-1],[])
+    e.pivots[('internal','high')]={'id':'new-level','price':101,'known_at':e.bars[-1].end,'crossed':False}
+    e.on_bar(candle(22,101,104,100.8,103.8),historical=False)
+    assert op['status']=='filtered'
+    assert any(x['id']!=op['id'] and x['status']=='watching' for x in e.opportunities.values())
+
+
+def test_preview_new_bar_replaces_same_direction_and_preserves_audit():
+    e=seeded('range',wide=True)
+    stamp=iso(bar_finished_at(e.bars[-1])+timedelta(seconds=10))
+    e.on_quote(109,stamp,stamp)
+    first=next(iter(e.previews.values()))
+    original=deepcopy(e.events[0])
+    for i in (20,21,22):
+        e.on_bar(candle(i,100,109,91,100),historical=False)
+        stamp=iso(bar_finished_at(e.bars[-1])+timedelta(seconds=10))
+        e.on_quote(109,stamp,stamp)
+        active=[p for p in e.previews.values() if p['status']=='watching' and p['direction']==-1]
+        assert len(active)==1
+        assert active[0]['signal_bar']==e.bars[-1].end
+    assert first['status']=='expired'
+    assert e.events[0]==original  # do not rewrite published evidence
+    assert len(e.previews)==4
+
+
+def test_preview_nearby_level_replaces_same_direction_within_bar():
+    e=seeded('range',wide=True)
+    stamp=iso(bar_finished_at(e.bars[-1])+timedelta(seconds=10))
+    e.on_quote(109,stamp,stamp)
+    e.equals.append({'id':'nearby','name':'EQH','side':'high','price':109.5,'known_at':stamp})
+    e.on_quote(109.5,stamp,stamp)
+    active=[p for p in e.previews.values() if p['status']=='watching']
+    assert len(active)==1 and active[0]['level']==109.5
+    count=len(e.events)
+    e.on_quote(109.5,stamp,stamp)
+    assert len(e.events)==count
+
+
+def test_formal_candidate_retires_proximity_preview():
+    e=seeded('range',wide=True)
+    stamp=iso(bar_finished_at(e.bars[-1])+timedelta(seconds=10))
+    e.on_quote(109,stamp,stamp)
+    e.on_bar(candle(20,109.8,110.4,109.2,109.4),historical=False)
+    assert any(o['status']=='watching' for o in e.opportunities.values())
+    assert not any(p['status']=='watching' for p in e.previews.values())

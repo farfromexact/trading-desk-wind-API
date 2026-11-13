@@ -417,7 +417,7 @@ class OptionsDesk:
     async def candidate_view(self, root, op_id=None, holding_days=None):
         e=self.entries.get(root)
         ops=list(self.desk.engines[e['contract']].opportunities.values()) if e and e['contract'] in self.desk.engines else []
-        ops=[x for x in ops if x.get('entry') and x['status'] in ('confirmed','triggered') and x.get('trading_day')==self.desk.current_day(root) and (not op_id or x['id']==op_id)]
+        ops=[x for x in ops if not x.get('historical') and x.get('entry') and x['status'] in ('confirmed','triggered') and x.get('trading_day')==self.desk.current_day(root) and (not op_id or x['id']==op_id)]
         op=max(ops,key=lambda x:x.get('confirmed_at',''),default=None)
         if not op:
             return dict(candidates=[],reasons=['等待已确认的期货方向信号'],context=self.context(root))
