@@ -14,16 +14,23 @@ from .domain import ROOT
 from .service import Desk
 from .replay import build_replay
 from .markets import valid_contract
+from .market_context import MarketContext
 
 
 @asynccontextmanager
 async def lifespan(app):
     desk=Desk(offline=os.environ.get('WIND_DESK_OFFLINE')=='1')
     app.state.desk=desk
+    context=MarketContext(desk)
+    app.state.market_context=context
+    context_task=asyncio.create_task(context.run())
     task=asyncio.create_task(desk.run())
     try:
         yield
     finally:
+        context_task.cancel()
+        await asyncio.gather(context_task,return_exceptions=True)
+        await context.close()
         desk.running=False
         try:
             await task
@@ -50,6 +57,35 @@ async def local_origin(request,call_next):
 @app.get('/api/state')
 async def state(request:Request):
     return request.app.state.desk.snapshot()
+
+
+@app.get('/api/market-context')
+async def market_context(request:Request):
+    return request.app.state.market_context.snapshot()
+
+
+@app.post('/api/market-context/refresh')
+async def refresh_market_context(request:Request):
+    try:
+        accepted=request.app.state.market_context.request_refresh()
+    except ValueError as exc:
+        raise HTTPException(400,str(exc))
+    return {'accepted':accepted,**request.app.state.market_context.snapshot()}
+
+
+class ContextMonitor(BaseModel):
+    enabled:bool
+
+
+@app.post('/api/market-context/monitor')
+async def context_monitor(body:ContextMonitor,request:Request):
+    context=request.app.state.market_context
+    if context.disabled:
+        raise HTTPException(400,'离线或已禁用市场背景查询')
+    context.monitor=body.enabled
+    if body.enabled:
+        context.request_refresh()
+    return context.snapshot()
 
 
 @app.get('/api/bars')

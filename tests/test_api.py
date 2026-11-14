@@ -23,6 +23,11 @@ def test_state_and_contract_guard(client):
     assert client.get('/api/bars?contract=IM2612.CFE&timeframe=7').status_code==400
     assert client.post('/api/watchlist',json={'root':'IM','contract':'IF2612.CFE'}).status_code==400
     assert client.post('/api/watchlist',json={'root':'IM','contract':'IM.CFE'}).status_code==400
+    context=client.get('/api/market-context').json()
+    assert context['disabled'] is True and context['monitoring'] is False and context['calls']==0
+    assert client.post('/api/market-context/refresh').status_code==400
+    assert client.post('/api/market-context/monitor',json={'enabled':True}).status_code==400
+    assert client.post('/api/market-context/refresh',headers={'Origin':'https://external.example'}).status_code==403
 
 
 def test_remote_origin_cannot_change_watchlist(client):

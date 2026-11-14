@@ -30,7 +30,7 @@ export function OptionsEnvironment({root,context,onOpen}){
     <div><small>平值 IV {first?.expiry?.slice(5)}</small><b>{pct(first?.atm_iv)}</b></div>
     <div><small>实际波动 RV5 / RV20</small><b>{pct(context?.rv5)} / {pct(context?.rv20)}</b></div>
     <div><small>25Δ 认沽 − 认购</small><b>{Number.isFinite(first?.put_minus_call_25d)?num(first.put_minus_call_25d*100)+' 波动点':'—'}</b></div>
-    <div><small>15分钟 IV 变化</small><b>{Number.isFinite(context?.iv_change_15m)?num(context.iv_change_15m*100)+' 波动点':'采集中'}</b></div>
+    <div><small>15分钟 IV 变化</small><b>{Number.isFinite(context?.iv_change_15m)?num(context.iv_change_15m*100)+' 波动点':context?.readonly_preview?'未载入':'采集中'}</b></div>
     <button onClick={onOpen}>期权链与研究 ↗</button>
     <p>{context?.notes?.[0]||(context?.ready?'波动状态作为方向信号的补充，优势尚待验证':context?.phase&&context.phase!=='交易中'?'休市快照仅供观察，开市同步后再评估候选':'等待同步的标的和期权双边盘口')}<span>行情 {stamp(context?.market_time)}</span></p>
   </section>;

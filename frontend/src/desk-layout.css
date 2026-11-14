@@ -1,0 +1,43 @@
+/* Shared production/preview layout. Wide monitors keep context beside price structure. */
+.desk-workspace{grid-template-areas:"context context" "chart opportunities"}
+.desk-workspace>.chart-panel{grid-area:chart;min-width:0}
+.desk-workspace>.market-context{grid-area:context;min-width:0;margin-bottom:0}
+.desk-workspace>.opportunity-panel{grid-area:opportunities;min-width:0}
+.desk-preview .connection{color:#cfba8d}
+.market-context th{position:static}
+@media(max-width:850px){.desk-workspace{grid-template-areas:"context" "chart" "opportunities"}}
+@media(min-width:1600px) and (min-aspect-ratio:19/10){
+  .app{max-width:3840px;padding:0 24px}
+  .app>header{height:64px}.app h1{font-size:19px}.app .brand-mark{height:40px;width:42px;font-size:27px}.app .brand>div>span{margin-top:5px;font-size:9px}
+  .app>.topline{height:35px}.app>.banner{padding:7px 13px;margin-bottom:10px;font-size:11px}
+  .app>.radar-grid{grid-template-columns:repeat(8,minmax(0,1fr));gap:9px;margin-bottom:12px}
+  .app .radar{padding:10px 12px 0}.app .radar-top b{font-size:16px}.app .radar-top small{font-size:10px}.app .radar-top .badge{font-size:8px;max-width:88px}
+  .app .radar-mid{margin-top:6px;gap:8px}.app .radar-mid strong{font-size:25px}.app .radar-mid .regime{font-size:9px;padding:3px 5px}
+  .app .radar-bottom{margin:5px 0 7px;font-size:9px}.app .radar-note{margin:0 -12px;padding:6px 12px;font-size:9px}
+  .app>.option-environment{padding:10px 16px 8px;gap:8px 18px;margin-bottom:12px}.app>.option-environment>div{gap:3px}.app>.option-environment b{font-size:13px}.app>.option-environment>p{padding-top:6px}.app>.option-environment .eyebrow{font-size:8px;margin-bottom:0}
+  .app>.option-environment>p{flex-basis:auto;flex:0 1 380px;border-top:0;padding-top:0;flex-direction:column;gap:4px}
+  .desk-workspace{grid-template-columns:minmax(560px,1.55fr) minmax(550px,1fr) minmax(290px,.55fr);grid-template-areas:"chart context opportunities";gap:14px;align-items:start}
+  .desk-workspace>.panel>.panel-head{padding:12px 16px;min-height:52px}.desk-workspace .chart-title h2{font-size:17px}.desk-workspace .chart-stats{padding:10px 16px}
+  .desk-workspace .chart-canvas{height:clamp(300px,42vh,600px)}.desk-workspace .chart-legend{padding:9px 16px;font-size:9px}.desk-workspace .context-box{padding:14px 16px}.desk-workspace .context-box h3{font-size:13px}
+  .desk-workspace>.market-context{position:sticky;top:12px}.desk-workspace>.opportunity-panel{position:sticky;top:12px;min-height:0;height:clamp(480px,calc(100dvh - 380px),860px);max-height:calc(100dvh - 24px)}
+  .desk-workspace .op-list{min-height:0;max-height:none;padding:11px}.desk-workspace .op-card{padding:12px}.desk-workspace .op-card p{font-size:10px}.desk-workspace .op-foot{font-size:9px}
+  .market-context--rail .mc-heading{padding:12px 16px 11px}.market-context--rail .mc-heading h2{font-size:14px}.market-context--rail .mc-eyebrow{font-size:8px;margin-bottom:4px}.market-context--rail .mc-controls{gap:5px}.market-context--rail .mc-controls>span{font-size:9px}.market-context--rail .mc-controls button{padding:4px 7px;font-size:10px}
+  .market-context--rail .mc-grid{grid-template-columns:1fr 1fr;gap:12px 0;padding:0 0 10px}.market-context--rail .mc-metric{padding:0 16px}.market-context--rail .mc-metric:nth-child(2){border-right:0}
+  .market-context--rail .mc-metric strong{font-size:25px;margin:7px 0 5px}.market-context--rail .mc-label{font-size:11px}.market-context--rail .mc-metric p{font-size:10px}.market-context--rail .mc-metric .mc-time{margin-top:5px;font-size:9px}
+  .market-context--rail .mc-comparison{grid-column:1/-1;border-top:1px solid #314047;padding:10px 16px 0}.market-context--rail .mc-comparison th:first-child{width:13%}.market-context--rail .mc-comparison th:nth-child(2){width:39%}
+  .market-context--rail .mc-comparison th,.market-context--rail .mc-comparison td{padding-block:5px}.market-context--rail .mc-comparison thead th{padding-top:0;font-size:10px}.market-context--rail .mc-comparison tbody th{font-size:13px;padding-top:8px}
+  .market-context--rail .mc-comparison strong{font-size:18px}.market-context--rail .mc-row-note{font-size:9px;margin-top:2px}.market-context--rail .mc-comparison .mc-time{font-size:8px;margin-top:2px}.market-context--rail .mc-comparison .mc-status{font-size:8px}
+  .market-context--rail .mc-row-meta{display:flex;align-items:baseline;flex-wrap:wrap;column-gap:8px}.market-context--rail .mc-row-meta .mc-time{white-space:nowrap}
+  .market-context--rail .mc-cross{padding:9px 16px;gap:7px 13px;font-size:10px}.market-context--rail .mc-cross-item{gap:5px}.market-context--rail .mc-cross-note{font-size:9px}.market-context--rail .mc-cross-item small{font-size:8px}
+  .market-context--rail .mc-etfs{padding:7px 16px}.market-context--rail .mc-etfs th,.market-context--rail .mc-etfs td{padding:5px 6px}.market-context--rail .mc-etfs th:first-child{padding-left:0;width:22%}
+  .market-context--rail .mc-etfs thead th,.market-context--rail .mc-etfs tbody th{font-size:10px}.market-context--rail .mc-etfs th small{font-size:8px;margin-top:2px}.market-context--rail .mc-etfs strong{font-size:17px}.market-context--rail .mc-etf-time{font-size:8px;margin-top:2px}.market-context--rail .mc-etf-status{font-size:8px;margin-top:1px}.market-context--rail .mc-etf-foot{font-size:8px;padding-top:3px}
+  .market-context--rail .mc-etfs strong{display:block}.market-context--rail .mc-etf-time{display:inline-block;margin-right:5px}.market-context--rail .mc-etf-status{display:inline}
+  .market-context--rail .mc-details{margin-top:0}.market-context--rail .mc-details summary{padding:8px 16px;font-size:10px}.market-context--rail .mc-definitions{grid-template-columns:1fr}
+  .app>.event-panel{margin-top:16px}.app>.option-workbench{margin-top:16px}
+}
+@media(min-width:1600px) and (min-aspect-ratio:19/10) and (max-height:950px){
+  .app>header{height:54px}.app>.topline{height:29px}.app>.radar-grid{margin-bottom:9px}.app .radar-mid strong{font-size:22px}.app .radar-note{padding-block:4px}.app>.option-environment{padding-block:8px;margin-bottom:9px}
+  .desk-workspace .chart-canvas{height:clamp(260px,38vh,400px)}.desk-workspace .context-box{padding-block:10px}.desk-workspace>.opportunity-panel{height:clamp(440px,calc(100dvh - 330px),660px)}
+  .market-context--rail .mc-heading{padding-block:9px}.market-context--rail .mc-grid{gap:8px 0;padding-bottom:8px}.market-context--rail .mc-metric strong{margin-block:4px}.market-context--rail .mc-comparison th,.market-context--rail .mc-comparison td{padding-block:4px;line-height:1.35}.market-context--rail .mc-cross{padding-block:7px}.market-context--rail .mc-etfs{padding-block:5px}.market-context--rail .mc-etfs th,.market-context--rail .mc-etfs td{padding-block:4px}
+  .market-context--rail .mc-details summary{padding-block:5px}
+}
