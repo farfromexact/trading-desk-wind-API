@@ -40,3 +40,25 @@
 - 现场再次复现Mac同步期权快照45秒超时。Mac改用`app/wind_snapshots.py`临时回调快照：回调只入队，唯一工作线程注册/取消；10秒等待期限后在下一轮调度清理并记录缺失，不阻塞期货查询。Windows保留同步路径，SDK实机复验仍待执行。原生45秒/连接25秒保护不变。
 - `acquisition.pending.waiting_callback`区别回调等待；Mac快照原生耗时只含注册/取消。期权指标`snapshot_timeouts`记录回调缺失，不能当成行情已完整。
 - 本轮完整结果与失败记录见`reports/refresh-pressure-and-atmosphere-2026-11-12.md`，不要把旧15分钟稳定报告当作本轮验收。
+
+## 2026-11-16 盘面背景统一 WindPy
+
+- 用户明确要求所有正式数据走WindPy，禁止恢复MCP/CLI/API Key或失败后回退MCP。旧历史预览导入器只读存档，不是联网取数入口。
+- `app/context_wind.py` 与 `app/wind_context_client.py` 复用唯一采集worker。背景请求低于期货/期权优先级、单在途，排队过期让行，WSQ等待10秒不占用原生工作线程；两端共用，原Windows期权路径保持不变。
+- ETF资金流使用WSD MFD_INFLOW_M；净申赎使用WSD UNIT_TOTAL/NAV推算并明确标记估算，不冒充MCP字段。校验实际日期和元单位；资金流无源更新时间，标记日频截面，不冒充盘中实时。多基金单日矩阵支持两种官方SDK布局，须按明确维度核验。
+- 新旧缓存分离，不能把旧MCP资金流当成WindPy结果。本轮Mac收盘后验证与Windows待验证边界见 `reports/market-context-windpy-2026-11-16.md`；更新后必须重建前端并重启，不能仅pull刷新旧页面。
+- 用户随后提供指数聚合字段 `rt_up_total/rt_down_total/rt_same_total`，已与 `rt_date/rt_time` 接入原三指数批次。保持1000家覆盖与源时间校验，不新增成分股订阅；Mac原生实测中证1000家数295/686/19、参与度30.07%，页面已显示30.1%；15分钟变化仍需盘中历史快照。ETF WSD/WSS份额净值对照通过，资金流unit参数缩放核验失败，后续不得把全部ETF审计称为通过。详见本轮报告。
+
+## 2026-11-16 五组广度 / 近5分钟补充
+
+- `INDICES`仍仅IM/IF/IH，供原分钟线与历史调度使用；广度用`COUNTS`的五个查询代码（000016/000300/000852/000688.SH、399006.SZ；后两者是板块口径），禁止直接扩充INDICES而意外增加后两者WSI及历史负载。
+- `breadths`含五卡；`rotation`含5分钟strength、同刻配对历史归一化turnover、同步breadth_gap。旧`breadth`保留中证1000别名，旧`style`现在是1000/300的5分钟strength，历史预览使用共用新算法，不再代表旧15分钟1000/50口径。
+- 广度5分钟对照只取目标前90秒，同交易日同半日；两指数广度差要求当前及历史对照时间差均≤10秒。重复收盘源快照不产生趋势；成交偏向不是资金净流入。原15分钟成交活跃度和正式信号完全不变。
+- 最新验证见 `reports/five-index-context-2026-11-16.md`；本轮不改ETF实现，上一轮资金流unit缩放差异仍未解决，不能写成已全部通过。未获推送指令前不commit/push。
+
+- 用户最终明确接受Wind原始聚合家数、不再核验样本。后两卡标科创板/创业板·Wind聚合，`COUNTS=None`，范围动态，`coverage=vendor_reported`且`scope_ok=null`；不得误标成已核验50/100指数样本。前三指数数量校验保留。禁止恢复名单查询或新增个股订阅：本轮全A名单WSET曾触发Mac45秒超时及一次重连，最终路径已移除，完整失败与修复后观察见报告。
+
+## 2026-11-16 发布补充
+
+- 指标旁新增前端说明按钮，悬停/聚焦查看，点击固定、Esc/点空白关闭，不新增API请求。
+- `.github/workflows/checks.yml` 对PR和main执行Windows/Linux离线pytest、Node测试与构建；CI不带Wind SDK，不得称为Windows行情实测。Windows更新必须停止旧服务、pull main、运行install.ps1重建前端、再启动；详见docs/CROSS_PLATFORM.md。

@@ -14,6 +14,7 @@ ETF_SAMPLES = {
 ETF_CODES = {x['code'] for x in ETF_SAMPLES.values()}
 ETF_FLOW_FIELDS = '最新交易日,交易时间,中文简称,当日主力净流入额'
 DAILY_FIELD = 'f_mf_netsubamt'
+DERIVED_DAILY_FIELD = 'share_change_times_nav'
 DAILY_HEADER = '申赎净流入额（元）'
 
 
@@ -26,6 +27,8 @@ def data_day(value):
 
 def daily_etf_rows(envelope, requested_day):
     """Parse the official single-day tool's declared date and exact table, never prose guesses."""
+    if envelope.get('provider') == 'WindPy':
+        return envelope['rows'], envelope['units']
     if envelope.get('ok') is False or envelope.get('isError'):
         raise ValueError('ETF日频查询失败，请检查权限或额度')
     requested_day = data_day(requested_day)
@@ -71,6 +74,19 @@ def flow_records(rows, units, received_at, number):
     received_at = dt(received_at)
     unit_ok = units.get('当日主力净流入额') == '元'
     for row in rows:
+        if row.get('source') == 'WindPy WSD':
+            code = row.get('code')
+            if code not in ETF_CODES:
+                continue
+            day=data_day(row['data_date'])
+            if day>received_at.date().isoformat() or row.get('field')!='mfd_inflow_m':
+                raise ValueError('ETF资金流日期或字段不匹配')
+            value=number(row.get('value')) if units.get('mfd_inflow_m')=='元' else None
+            result[code]=dict(code=code,value=value,time=None,trading_day=day,data_date=day,
+                observed_at=iso(received_at),field='mfd_inflow_m',unit='元',frequency='daily_snapshot',
+                source='WindPy WSD MFD_INFLOW_M',reason='' if value is not None else 'WindPy资金流暂缺',
+                published_at=None)
+            continue
         code = row.get('Wind代码') or row.get('windcode')
         if code not in ETF_CODES:
             continue
@@ -104,8 +120,10 @@ def daily_records(rows, units, received_at, number):
         day = data_day(row['data_date'])
         if day >= dt(received_at).date().isoformat():
             raise ValueError('日频申赎只能采用当前日期之前的数据日')
-        value = number(row.get('value')) if units.get(DAILY_FIELD) == '元' else None
+        field=row.get('field',DAILY_FIELD)
+        value = number(row.get('value')) if field in (DAILY_FIELD,DERIVED_DAILY_FIELD) and units.get(field) == '元' else None
         result[code] = dict(code=code, value=value, data_date=day, observed_at=iso(received_at),
-                            published_at=None, field=DAILY_FIELD, unit='元', frequency='daily',
-                            source='Wind MCP日频申赎净流入额', reason='' if value is not None else '日频申赎暂缺')
+                            published_at=None, field=field, unit='元', frequency='daily',
+                            estimated=field==DERIVED_DAILY_FIELD,
+                            source=row.get('source', '历史MCP日频申赎净流入额'), reason='' if value is not None else '日频申赎暂缺')
     return result

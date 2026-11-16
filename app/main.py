@@ -73,6 +73,16 @@ async def refresh_market_context(request:Request):
     return {'accepted':accepted,**request.app.state.market_context.snapshot()}
 
 
+@app.post('/api/market-context/audit')
+async def audit_market_context(request:Request):
+    try:
+        context=request.app.state.market_context
+        accepted=context.request_audit()
+    except ValueError as exc:
+        raise HTTPException(409,str(exc)) from exc
+    return {'accepted':accepted,**context.snapshot()}
+
+
 class ContextMonitor(BaseModel):
     enabled:bool
 

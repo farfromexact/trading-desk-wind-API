@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from .domain import Bar, TZ, dt, iso, now
 from .options_wind import OPTION_FIELDS, dispatch
 from .wind_snapshots import AsyncOptionSnapshots
+from .context_wind import ContextRequests, context_priority
 
 
 def update_option_subscriptions(w, desired, groups, callback, check):
@@ -79,19 +80,21 @@ def worker_main(commands, results, quote_results=None):
         return r
 
     snapshots=AsyncOptionSnapshots(w,check,serialize_quotes,results,quote_results)
+    context=ContextRequests(w,check,results)
     try:
         check(w.start(waitTime=10), '连接')
         results.put({'type': 'connected'})
         while True:
             snapshots.poll()
+            context.poll()
             try:
                 cmd=commands.get(timeout=.01 if jobs else .05)
                 counter+=1
-                heapq.heappush(jobs,(-100 if cmd['op']=='stop' else 10 if cmd['op'].startswith('option_') else 0,counter,cmd))
+                heapq.heappush(jobs,(context_priority(cmd['op']),counter,cmd))
                 while True:
                     cmd=commands.get_nowait()
                     counter+=1
-                    heapq.heappush(jobs,(-100 if cmd['op']=='stop' else 10 if cmd['op'].startswith('option_') else 0,counter,cmd))
+                    heapq.heappush(jobs,(context_priority(cmd['op']),counter,cmd))
             except queue.Empty:
                 pass
             if not jobs:
@@ -134,6 +137,10 @@ def worker_main(commands, results, quote_results=None):
                                 payload.append(b.json())
                         except (ValueError, TypeError, IndexError, KeyError):
                             continue
+                elif op == 'context':
+                    payload=context.start(cmd)
+                    if cmd['method']=='wsq':
+                        continue
                 elif op == 'option_snapshot':
                     if platform.system()=='Darwin':
                         snapshots.start(cmd)
@@ -158,6 +165,7 @@ def worker_main(commands, results, quote_results=None):
     finally:
         done.set()
         try:
+            context.close()
             snapshots.close()
             for subscription in list(subscriptions.values())+list(option_subscriptions.values()):
                 w.cancelRequest(subscription)

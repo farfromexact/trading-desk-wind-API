@@ -1,24 +1,22 @@
-"""Read-only, optional market context. Never submits work to the WindPy worker."""
+"""Optional read-only context, using the existing WindPy collector on both platforms."""
 from __future__ import annotations
 
 import asyncio
 import json
 import math
 import os
-import shutil
 import statistics
-import subprocess
 import time
-import uuid
 from datetime import timedelta
 from pathlib import Path
 
+from .wind_context_client import WindPyContextClient
 from .domain import dt, iso, now
 from .etf_context import ETF_SAMPLES, ETF_FLOW_FIELDS, DAILY_FIELD, daily_etf_rows, flow_records, daily_records
 
 INDICES = {'IM': '000852.SH', 'IF': '000300.SH', 'IH': '000016.SH'}
-COUNTS = {'000852.SH': 1000, '000300.SH': 300, '000016.SH': 50}
-NAMES = {'000852.SH': '中证1000', '000300.SH': '沪深300', '000016.SH': '上证50'}
+COUNTS = {'000016.SH': 50, '000300.SH': 300, '000852.SH': 1000, '000688.SH': None, '399006.SZ': None}
+NAMES = {'000016.SH': '上证50', '000300.SH': '沪深300', '000852.SH': '中证1000', '000688.SH': '科创板', '399006.SZ': '创业板'}
 FIELDS = '最新交易日,交易时间,中文简称,最新成交价,涨跌幅,成交额,上涨家数,下跌家数,平盘家数'
 
 
@@ -53,6 +51,8 @@ def cash_session(stamp):
 
 
 def mcp_rows(envelope):
+    if envelope.get('provider') == 'WindPy':
+        return envelope['rows'], envelope['units']
     if envelope.get('ok') is False or envelope.get('isError'):
         raise ValueError('Wind 请求失败，请检查本机登录、权限或额度')
     for block in envelope.get('content', []):
@@ -75,65 +75,10 @@ def mcp_rows(envelope):
     raise ValueError('Wind 未返回受支持的结构化数据')
 
 
-class WindContextClient:
-    """Official CLI owns authentication. No SDK import, credentials or shell commands."""
-    def __init__(self, cli=None, fund_cli=None):
-        override = cli or os.environ.get('WIND_CONTEXT_CLI')
-        choices = [Path(override).expanduser()] if override else [
-            Path.home()/'.codex/skills/wind-one-mcp-skill/scripts/cli.mjs',
-            Path.home()/'.agents/skills/wind-one-mcp-skill/scripts/cli.mjs',
-        ]
-        self.cli = next((p for p in choices if p.is_file()), None)
-        fund_override = fund_cli or os.environ.get('WIND_CONTEXT_FUND_CLI')
-        fund_choices = [Path(fund_override).expanduser()] if fund_override else [
-            Path.home()/'.codex/skills/wind-mcp-skill/scripts/cli.mjs',
-            Path.home()/'.agents/skills/wind-mcp-skill/scripts/cli.mjs',
-        ]
-        self.fund_cli = next((p for p in fund_choices if p.is_file()), None)
-        self.node = shutil.which('node')
-
-    async def call(self, tool, params):
-        # The verified fund snapshot tool lives on the dedicated official fund endpoint.
-        if tool == 'get_fund_price_indicators':
-            if not self.fund_cli or not self.node:
-                raise ValueError('未找到官方基金MCP CLI；可设置 WIND_CONTEXT_FUND_CLI')
-            request = self.fund_cli.parent/('request-context-'+uuid.uuid4().hex+'.json')
-            try:
-                request.write_text(json.dumps(params, ensure_ascii=False), encoding='utf-8')
-                return await self.execute(self.fund_cli, ['call', 'fund_data', tool, '@'+str(request)], None)
-            except OSError:
-                raise ValueError('基金MCP请求文件不可写或Node不可启动') from None
-            finally:
-                request.unlink(missing_ok=True)
-        if not self.cli or not self.node:
-            raise ValueError('未找到官方 Wind MCP CLI；可设置 WIND_CONTEXT_CLI')
-        return await self.execute(self.cli, ['call', tool, '-'], json.dumps(params, ensure_ascii=False).encode('utf-8'))
-
-    async def execute(self, cli, arguments, payload):
-        env = dict(os.environ, WIND_SKILL_AUTO_UPDATE='0', NODE_USE_SYSTEM_CA='1')
-        kwargs = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
-        proc = await asyncio.create_subprocess_exec(
-            self.node, str(cli), *arguments, stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env, **kwargs)
-        try:
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(payload), 30)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            if proc.returncode is None:
-                proc.kill()
-            await proc.communicate()
-            raise
-        if proc.returncode:
-            raise ValueError('Wind MCP 查询失败，请检查本机配置、权限或额度')
-        try:
-            return json.loads(stdout)
-        except ValueError:
-            raise ValueError('Wind MCP 返回格式无效') from None
-
-
 class ContextBook:
     def __init__(self, data=None):
         data = data or {}
+        self.provider=data.get('provider','historical_import')
         self.bars = data.get('bars', {})
         self.snapshots = data.get('snapshots', {})
         self.cross = data.get('cross', [])
@@ -143,7 +88,7 @@ class ContextBook:
         self.updated_at = data.get('updated_at')
 
     def json(self):
-        return dict(version=2, bars=self.bars, snapshots=self.snapshots, cross=self.cross,
+        return dict(version=4, provider=self.provider, bars=self.bars, snapshots=self.snapshots, cross=self.cross,
                     etf_flow=self.etf_flow, etf_daily=self.etf_daily, etf_daily_checked_at=self.etf_daily_checked_at,
                     updated_at=self.updated_at)
 
@@ -151,6 +96,10 @@ class ContextBook:
         incoming = flow_records(rows, units, received_at, number)
         for code, row in incoming.items():
             old = self.etf_flow.get(code, {})
+            if row.get('frequency')=='daily_snapshot':
+                if row['value'] is not None and row['data_date']>=old.get('data_date',''):
+                    self.etf_flow[code]=row
+                continue
             if old.get('time') and old.get('value') is not None and (not row['time'] or row['value'] is None):
                 continue
             if row['time'] and old.get('time') and dt(row['time']) < dt(old['time']):
@@ -180,12 +129,18 @@ class ContextBook:
             except (ValueError, KeyError, TypeError):
                 continue
             counts = [number(row.get(k)) for k in ('上涨家数', '下跌家数', '平盘家数')]
-            valid = (all(v is not None and v >= 0 and v.is_integer() for v in counts)
-                     and sum(counts) == COUNTS[code])
+            expected = COUNTS[code]
+            counts_valid = all(v is not None and v >= 0 and v.is_integer() for v in counts)
+            # User-selected board aggregates have a vendor-reported universe, not a fixed
+            # 50/100-constituent index. Never label them independently coverage-verified.
+            valid = counts_valid and (expected is None or sum(counts) == expected)
             value = dict(code=code, time=stamp, trading_day=str(row.get('最新交易日', '')),
                          breadth=counts[0]/sum(counts[:2])*100 if valid and sum(counts[:2]) else None,
-                         count_total=sum(counts) if all(v is not None for v in counts) else None,
-                         scope_ok=valid, counts=counts)
+                         count_total=sum(counts) if counts_valid else None,
+                         scope_ok=valid if expected is not None else None, counts=counts, expected=expected,
+                         coverage='index_count_checked' if expected is not None else 'vendor_reported',
+                         reason=row.get('reason') or (f'家数合计{sum(counts):g} / 样本{expected}，覆盖不匹配'
+                         if expected is not None and counts_valid and not valid else None))
             self.snapshots.setdefault(code, {})[stamp] = value
             self.snapshots[code] = dict(sorted(self.snapshots[code].items())[-500:])
 
@@ -204,12 +159,12 @@ class ContextBook:
                 continue
             self.bars.setdefault(code, {})[iso(stamp)] = dict(
                 time=iso(stamp), close=close, amount=amount if amount_ok and amount is not None and amount >= 0 else None,
-                received_at=iso(received_at), source='Wind MCP 5分钟线')
+                received_at=iso(received_at), source=units.get('source', '历史导入5分钟线'))
         self.bars[code] = dict(sorted(self.bars.get(code, {}).items())[-2400:])
 
-    def window(self, code, end):
+    def window(self, code, end, minutes=15):
         rows = self.bars.get(code, {})
-        stamps = [iso(dt(end)-timedelta(minutes=i*5)) for i in (3, 2, 1, 0)]
+        stamps = [iso(dt(end)-timedelta(minutes=i*5)) for i in range(minutes//5, -1, -1)]
         values = [rows.get(t) for t in stamps]
         if any(v is None for v in values) or len({cash_session(t) for t in stamps}) != 1:
             return None
@@ -224,31 +179,78 @@ class ContextBook:
         return [day for day in days if all(
             rows.get(t, {}).get('amount') is not None for t in cash_bar_labels(day))]
 
-    def view(self, at=None):
-        at = dt(at or now())
-        breadth = self.snapshots.get(INDICES['IM'], {})
-        available = [t for t in breadth if dt(t) <= at]
-        latest = breadth[max(available)] if available else None
-        share = dict(value=None, change_pp=None, time=None, reason='等待指数聚合快照')
-        if latest:
-            stamp = dt(latest['time'])
-            reason = '' if latest['scope_ok'] and latest['breadth'] is not None else '聚合家数覆盖不匹配或无涨跌样本'
-            share.update(value=latest['breadth'], time=latest['time'], reason=reason,
-                         count_total=latest['count_total'], expected=1000)
-            target = stamp-timedelta(minutes=15)
-            candidates = [x for t, x in breadth.items() if target-timedelta(seconds=90) <= dt(t) <= target
-                          and cash_session(t) == cash_session(stamp) and cash_session(t) is not None]
-            if candidates and latest['breadth'] is not None and candidates[-1]['breadth'] is not None:
-                share['change_pp'] = latest['breadth']-candidates[-1]['breadth']
-        # Select a common bar end; never splice two index clocks into relative strength.
-        common = set(self.bars.get(INDICES['IM'], {})) & set(self.bars.get(INDICES['IH'], {}))
+    def breadth_view(self, code, at):
+        rows = self.snapshots.get(code, {})
+        available = sorted(t for t in rows if dt(t) <= at)
+        result = dict(code=code, name=NAMES[code], value=None, change_pp=None,
+                      time=None, reason='等待聚合家数', expected=COUNTS[code], scope='index' if COUNTS[code] is not None else 'board',
+                      counts=None, trend=[], window_minutes=5)
+        if not available:
+            return result
+        latest = rows[available[-1]]
+        stamp = dt(latest['time'])
+        result.update(value=latest['breadth'], time=latest['time'], counts=latest['counts'],
+                      count_total=latest['count_total'], expected=latest.get('expected',COUNTS[code]), coverage=latest.get('coverage'), reason='' if latest['breadth'] is not None
+                      else latest.get('reason') or '聚合家数覆盖不匹配或无涨跌样本')
+        target = stamp-timedelta(minutes=5)
+        candidates = [t for t in available if target-timedelta(seconds=90) <= dt(t) <= target
+                      and cash_session(t) == cash_session(stamp) and cash_session(t) is not None]
+        if candidates and latest['breadth'] is not None:
+            prior = rows[candidates[-1]]
+            if prior['breadth'] is not None:
+                result.update(change_pp=latest['breadth']-prior['breadth'], previous_time=prior['time'])
+        # Source clocks, not refresh clocks. Re-reading a closing snapshot adds no trend points.
+        result['trend'] = [dict(time=t, value=rows[t]['breadth']) for t in available
+                           if stamp-timedelta(minutes=30) <= dt(t)
+                           and cash_session(t) == cash_session(stamp) and cash_session(t) is not None]
+        return result
+
+    def rotation_view(self, at, breadths):
+        small_code, large_code = INDICES['IM'], INDICES['IF']
+        strength = dict(value=None, time=None, reason='等待同步的完整5分钟线', window_minutes=5)
+        turnover = dict(value=None, time=None, baseline_days=0, reason='等待完整5分钟成交额', window_minutes=5)
+        common = set(self.bars.get(small_code, {})) & set(self.bars.get(large_code, {}))
         common = sorted(t for t in common if dt(t)+timedelta(seconds=65) <= at)
-        style = dict(value=None, time=None, reason='等待同步的完整15分钟线')
         if common:
             end = common[-1]
-            small, large = self.window(INDICES['IM'], end), self.window(INDICES['IH'], end)
+            small, large = self.window(small_code, end, 5), self.window(large_code, end, 5)
             if small and large:
-                style.update(value=small['return_pct']-large['return_pct'], time=end, reason='')
+                strength.update(value=small['return_pct']-large['return_pct'], time=end, reason='',
+                                small_return=small['return_pct'], large_return=large['return_pct'])
+            # A single completed five-minute turnover bar; never sum overlapping universes.
+            small_amount = self.bars[small_code][end].get('amount')
+            large_amount = self.bars[large_code][end].get('amount')
+            if small_amount is not None and small_amount >= 0 and large_amount is not None and large_amount > 0:
+                days = sorted({t[:10] for t in common if t[:10] < end[:10]})[-20:]
+                ratios = []
+                for day in days:
+                    slot = day+end[10:]
+                    a = self.bars[small_code].get(slot, {}).get('amount')
+                    b = self.bars[large_code].get(slot, {}).get('amount')
+                    if a is not None and b is not None and a > 0 and b > 0:
+                        ratios.append(a/b)
+                turnover.update(time=end, baseline_days=len(ratios), small_amount=small_amount,
+                                large_amount=large_amount, reason=f'同刻配对基准 {len(ratios)}/10日 · 不足')
+                if len(ratios) >= 10:
+                    turnover.update(value=(small_amount/large_amount)/statistics.median(ratios), reason='')
+        small, large = breadths[small_code], breadths[large_code]
+        gap = dict(value=None, change_pp=None, time=None, reason='等待同刻的1000 / 300广度', window_minutes=5)
+        if (small['value'] is not None and large['value'] is not None
+                and abs((dt(small['time'])-dt(large['time'])).total_seconds()) <= 10
+                and cash_session(small['time']) == cash_session(large['time'])
+                and cash_session(small['time']) is not None):
+            gap.update(value=small['value']-large['value'], time=min(small['time'],large['time']), reason='')
+            if (small['change_pp'] is not None and large['change_pp'] is not None
+                    and abs((dt(small['previous_time'])-dt(large['previous_time'])).total_seconds()) <= 10):
+                gap['change_pp'] = small['change_pp']-large['change_pp']
+        return dict(strength=strength, turnover=turnover, breadth_gap=gap)
+
+    def view(self, at=None):
+        at = dt(at or now())
+        breadths = {code:self.breadth_view(code, at) for code in COUNTS}
+        share = breadths[INDICES['IM']]
+        rotation = self.rotation_view(at, breadths)
+        style = rotation['strength']
         activity = {}
         for root, code in INDICES.items():
             rows = self.bars.get(code, {})
@@ -275,7 +277,7 @@ class ContextBook:
             if daily and (dt(daily['observed_at']) > at or daily['data_date'] >= at.date().isoformat()):
                 daily = None
             etfs.append(dict(root=root, **sample, flow=flow, daily=daily))
-        return dict(breadth=share, style=style, activity=activity, cross=self.cross, etfs=etfs,
+        return dict(breadth=share, breadths=list(breadths.values()), rotation=rotation, style=style, activity=activity, cross=self.cross, etfs=etfs,
                     updated_at=self.updated_at, generated_at=iso(at))
 
 
@@ -283,13 +285,14 @@ class MarketContext:
     def __init__(self, desk, data_dir=None, client=None):
         self.desk = desk
         directory = data_dir or Path(desk.store.db.execute('PRAGMA database_list').fetchone()[2]).parent
-        self.path = Path(directory)/'market-context.json'
+        self.path = Path(directory)/'market-context-windpy.json'
         try:
             data = json.loads(self.path.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             data = None
         self.book = ContextBook(data)
-        self.client = client or WindContextClient()
+        self.book.provider='WindPy'
+        self.client = client or WindPyContextClient(desk,directory)
         self.disabled = desk.offline or os.environ.get('WIND_DESK_CONTEXT_DISABLED') == '1'
         self.monitor = False
         self.task = None
@@ -302,14 +305,15 @@ class MarketContext:
         self.error = None
         self.calls = 0
         self.etf_errors = {}
+        self.audit = None
         self.last_daily_attempt = float('-inf')
 
     def snapshot(self):
         return dict(**self.book.view(), busy=bool(self.task and not self.task.done()),
                     monitoring=self.monitor, disabled=self.disabled, error=self.error,
-                    calls=self.calls, etf_errors=self.etf_errors,
+                    calls=self.calls, etf_errors=self.etf_errors, audit=self.audit,
                     history_loading=self.history_loading, history_errors=self.history_errors,
-                    source='Wind Alice 万得金融数据服务', interval_seconds=60)
+                    source='WindPy · 本机 Wind 登录', interval_seconds=60)
 
     def request_refresh(self):
         if self.disabled:
@@ -322,6 +326,26 @@ class MarketContext:
         self.task = asyncio.create_task(self.refresh())
         return True
 
+    def request_audit(self):
+        if self.disabled:
+            raise ValueError('离线或已禁用市场背景查询')
+        if self.task and not self.task.done() or time.monotonic()-self.last_attempt<60:
+            return False
+        self.last_attempt=time.monotonic()
+        self.task=asyncio.create_task(self.audit_etfs())
+        return True
+
+    async def audit_etfs(self):
+        try:
+            self.audit=await self.client.audit_etfs()
+            self.path.parent.mkdir(parents=True,exist_ok=True)
+            (self.path.parent/'market-context-windpy-etf-audit.json').write_text(
+                json.dumps(self.audit,ensure_ascii=False,allow_nan=False,indent=2),encoding='utf-8')
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.audit=dict(error=str(exc),observed_at=iso(now()))
+
     async def refresh(self):
         self.error = None
         try:
@@ -329,55 +353,70 @@ class MarketContext:
                 self.calls += 1
                 envelope = await self.client.call(tool, params)
                 self.path.parent.mkdir(parents=True, exist_ok=True)
-                archive = self.path.parent/('market-context-observed-'+now().strftime('%Y%m%d')+'.jsonl')
+                archive = self.path.parent/('market-context-windpy-observed-'+now().strftime('%Y%m%d')+'.jsonl')
                 with archive.open('a', encoding='utf-8') as file:
                     file.write(json.dumps(dict(observed_at=iso(now()), tool=tool, params=params,
                                                response=envelope), ensure_ascii=False, allow_nan=False)+'\n')
                 return parser(envelope)
-            rows, units = await query('get_index_price_indicators', dict(windcode=','.join(INDICES.values()), indexes=FIELDS))
-            if not rows:
-                raise ValueError('Wind 指数快照为空')
-            self.book.add_snapshots(rows, units)
-            dates = {str(r.get('最新交易日', '')) for r in rows}
-            # History comes from native 5m bars, not differencing stale cumulative snapshots.
-            if len(dates) != 1:
-                raise ValueError('指数快照交易日不一致')
-            day = next(iter(dates))
-            if len(day) != 8 or not day.isdigit():
-                raise ValueError('指数快照缺少交易日')
-            day = f'{day[:4]}-{day[4:6]}-{day[6:]}'
-            target = completed_cash_bar(day, now())
+            problems=[]
+            day=max((d for d in self.desk.calendar if d<=now().date().isoformat()),default=None)
+            updated=False
+            try:
+                rows, units = await query('get_index_price_indicators', dict(windcode=','.join(COUNTS), indexes=FIELDS))
+                if not rows:
+                    raise ValueError('Wind 指数快照为空')
+                self.book.add_snapshots(rows, units)
+                dates = {str(r.get('最新交易日', '')) for r in rows}
+                if len(dates)!=1:
+                    raise ValueError('指数快照交易日不一致')
+                source_day=next(iter(dates))
+                if len(source_day)!=8 or not source_day.isdigit():
+                    raise ValueError('指数快照缺少交易日')
+                day=f'{source_day[:4]}-{source_day[4:6]}-{source_day[6:]}'
+                if day>now().date().isoformat():
+                    raise ValueError('指数快照日期在未来')
+                updated=True
+            except ValueError as exc:
+                problems.append('指数广度：'+str(exc))
+            target=completed_cash_bar(day,now()) if day else None
             if target:
                 for code in INDICES.values():
-                    if self.last_bars_slot.get(code) == target:
+                    if self.last_bars_slot.get(code)==target:
                         continue
-                    rows, units = await query('get_index_kline', dict(windcode=code, begin_date=day, end_date=day, period='3', count=-24))
-                    if not rows:
-                        raise ValueError('Wind 分钟线为空')
-                    self.book.add_bars(code, rows, units, now())
-                    # A delayed provider must be retried next minute, not considered complete.
-                    if target in self.book.bars.get(code, {}):
-                        self.last_bars_slot[code] = target
-            slot = day+'-'+now().strftime('%H:')+str(now().minute//5)
-            if slot != self.last_cross_slot:
-                codes = [self.desk.watch[r] for r in ('AG', 'AU', 'SC', 'T', 'TL') if self.desk.watch.get(r)]
-                if codes:
-                    rows, _ = await query('securities_get_price', dict(windCodes=codes))
-                    # Keep each source clock/trading day. No cross-market sum or flow inference.
-                    self.book.cross = [dict(code=r.get('windcode'), name=r.get('中文简称'),
-                                            time=r.get('交易时间'), trading_day=r.get('最新交易日'),
-                                            change_pct=number(r.get('涨跌幅')),
-                                            amount=number(r.get('成交额')) if r.get('indicator_units', {}).get('成交额') == '元' else None)
-                                       for r in rows if r.get('windcode') in codes]
-                self.last_cross_slot = slot
-            self.book.updated_at = iso(now())
-            # Independent ETF failures do not discard index/cross-market observations.
+                    try:
+                        rows, units = await query('get_index_kline', dict(windcode=code, begin_date=day, end_date=day, period='3', count=-24))
+                        if not rows:
+                            raise ValueError('Wind 分钟线为空')
+                        self.book.add_bars(code, rows, units, now())
+                        if target in self.book.bars.get(code,{}):
+                            self.last_bars_slot[code]=target
+                            updated=True
+                    except ValueError as exc:
+                        problems.append(NAMES[code]+'：'+str(exc))
+            slot=now().strftime('%Y-%m-%d-%H:')+str(now().minute//5)
+            if slot!=self.last_cross_slot:
+                codes=[self.desk.watch[r] for r in ('AG','AU','SC','T','TL') if self.desk.watch.get(r)]
+                try:
+                    if codes:
+                        rows, _ = await query('securities_get_price',dict(windCodes=codes))
+                        self.book.cross=[dict(code=r.get('windcode'),name=r.get('中文简称'),
+                            time=r.get('交易时间'),trading_day=r.get('最新交易日'),change_pct=number(r.get('涨跌幅')),
+                            amount=number(r.get('成交额')) if r.get('indicator_units',{}).get('成交额')=='元' else None)
+                            for r in rows if r.get('windcode') in codes]
+                        updated=True
+                    self.last_cross_slot=slot
+                except ValueError as exc:
+                    problems.append('跨市场：'+str(exc))
+            if updated:
+                self.book.updated_at=iso(now())
             await self.refresh_etfs(query)
-            await self.refresh_history(query, day)
+            if day:
+                await self.refresh_history(query,day)
+            self.error='；'.join(problems) or None
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError:
-            self.error = '背景查询超时，保留原时间；独立于WindPy查询'
+            self.error = '背景查询超时，保留原时间，等待WindPy恢复'
         except Exception as exc:
             self.error = str(exc) if isinstance(exc, ValueError) else '背景查询失败，保留原时间'
         finally:
@@ -419,8 +458,10 @@ class MarketContext:
                 self.history_errors.pop(root, None)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                self.history_errors[root] = '历史基准未完整补齐，30分钟后重试'
+            except Exception as exc:
+                self.history_errors[root] = '历史基准未完整补齐：'+str(exc)
+                if any(word in str(exc) for word in ('让行','暂缓','连接尚未就绪')):
+                    self.history_attempts[code]=time.monotonic()-1770
             finally:
                 self.history_loading = None
             break
@@ -435,8 +476,8 @@ class MarketContext:
             self.etf_errors.pop('flow', None)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            self.etf_errors['flow'] = 'ETF盘中资金流未完整更新，保留各自源时间'
+        except Exception as exc:
+            self.etf_errors['flow'] = 'ETF资金流未完整更新：'+str(exc)
         # At most once per successful local date; failed/partial daily responses retry after 30m.
         today = now().date().isoformat()
         checked = self.book.etf_daily_checked_at
@@ -462,8 +503,10 @@ class MarketContext:
             self.etf_errors.pop('daily', None)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            self.etf_errors['daily'] = 'ETF日频净申赎未完整更新，保留各自数据日'
+        except Exception as exc:
+            self.etf_errors['daily'] = 'ETF日频净申赎未完整更新：'+str(exc)
+            if any(word in str(exc) for word in ('让行','暂缓','连接尚未就绪')):
+                self.last_daily_attempt=time.monotonic()-1770
 
     async def run(self):
         while True:
