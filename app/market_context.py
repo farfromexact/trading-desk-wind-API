@@ -14,6 +14,9 @@ from .wind_context_client import WindPyContextClient
 from .domain import dt, iso, now
 from .etf_context import ETF_SAMPLES, ETF_FLOW_FIELDS, DAILY_FIELD, daily_etf_rows, flow_records, daily_records
 
+REFRESH_SECONDS = 30
+ETF_FLOW_SECONDS = 60
+
 INDICES = {'IM': '000852.SH', 'IF': '000300.SH', 'IH': '000016.SH'}
 COUNTS = {'000016.SH': 50, '000300.SH': 300, '000852.SH': 1000, '000688.SH': None, '399006.SZ': None}
 NAMES = {'000016.SH': '上证50', '000300.SH': '沪深300', '000852.SH': '中证1000', '000688.SH': '科创板', '399006.SZ': '创业板'}
@@ -306,6 +309,7 @@ class MarketContext:
         self.calls = 0
         self.etf_errors = {}
         self.audit = None
+        self.last_flow_attempt = float('-inf')
         self.last_daily_attempt = float('-inf')
 
     def snapshot(self):
@@ -313,14 +317,14 @@ class MarketContext:
                     monitoring=self.monitor, disabled=self.disabled, error=self.error,
                     calls=self.calls, etf_errors=self.etf_errors, audit=self.audit,
                     history_loading=self.history_loading, history_errors=self.history_errors,
-                    source='WindPy · 本机 Wind 登录', interval_seconds=60)
+                    source='WindPy · 本机 Wind 登录', interval_seconds=REFRESH_SECONDS)
 
     def request_refresh(self):
         if self.disabled:
             raise ValueError('离线或已禁用市场背景查询')
         if self.task and not self.task.done():
             return False
-        if time.monotonic()-self.last_attempt < 60:
+        if time.monotonic()-self.last_attempt < REFRESH_SECONDS:
             return False
         self.last_attempt = time.monotonic()
         self.task = asyncio.create_task(self.refresh())
@@ -468,16 +472,19 @@ class MarketContext:
 
     async def refresh_etfs(self, query):
         codes = [sample['code'] for sample in ETF_SAMPLES.values()]
-        try:
-            rows, units = await query('get_fund_price_indicators', dict(windcode=','.join(codes), indexes=ETF_FLOW_FIELDS))
-            incoming = self.book.add_etf_flow(rows, units, now())
-            if len(incoming) != len(codes) or any(x['value'] is None for x in incoming.values()):
-                raise ValueError('部分ETF资金流缺失或口径未通过校验')
-            self.etf_errors.pop('flow', None)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self.etf_errors['flow'] = 'ETF资金流未完整更新：'+str(exc)
+        # Breadth may refresh faster; keep daily flow polling at its previous cadence.
+        if time.monotonic()-self.last_flow_attempt >= ETF_FLOW_SECONDS:
+            self.last_flow_attempt = time.monotonic()
+            try:
+                rows, units = await query('get_fund_price_indicators', dict(windcode=','.join(codes), indexes=ETF_FLOW_FIELDS))
+                incoming = self.book.add_etf_flow(rows, units, now())
+                if len(incoming) != len(codes) or any(x['value'] is None for x in incoming.values()):
+                    raise ValueError('部分ETF资金流缺失或口径未通过校验')
+                self.etf_errors.pop('flow', None)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.etf_errors['flow'] = 'ETF资金流未完整更新：'+str(exc)
         # At most once per successful local date; failed/partial daily responses retry after 30m.
         today = now().date().isoformat()
         checked = self.book.etf_daily_checked_at

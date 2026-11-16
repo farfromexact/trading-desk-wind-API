@@ -314,3 +314,35 @@ def test_board_vendor_scope_is_explicit_and_never_claims_index_coverage():
     assert b.breadth_view('000852.SH',dt(stamp))['value'] is None
     snapshot(b,'000688.SH',stamp,39,-1,7)
     assert b.breadth_view('000688.SH',dt(stamp))['value'] is None
+
+
+def test_faster_breadth_does_not_double_etf_flow_requests(tmp_path, monkeypatch):
+    import app.market_context as context
+    tick=[100.]
+    monkeypatch.setattr(context, 'time', SimpleNamespace(monotonic=lambda:tick[0]))
+    calls=[]
+    class Client:
+        async def call(self,tool,params):
+            calls.append(tool)
+            raise ValueError('暂缺')
+    service=MarketContext(SimpleNamespace(offline=False,watch={},calendar=set()),tmp_path,client=Client())
+    async def run():
+        assert service.snapshot()['interval_seconds']==30
+        assert service.request_refresh()
+        await service.task
+        tick[0]+=29
+        assert not service.request_refresh()
+        tick[0]+=1
+        assert service.request_refresh()
+        assert not service.request_refresh()  # still single flight
+        await service.task
+        assert calls.count('get_index_price_indicators')==2
+        assert calls.count('get_fund_price_indicators')==1
+        tick[0]+=30
+        assert service.request_refresh()
+        await service.task
+        assert calls.count('get_index_price_indicators')==3
+        assert calls.count('get_fund_price_indicators')==2
+        assert calls.count('fund_get_listed_historical_price')==1
+        await service.close()
+    asyncio.run(run())

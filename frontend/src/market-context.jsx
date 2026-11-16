@@ -16,7 +16,7 @@ export function MarketContextPanel({instruments=[], connected=true, preview=fals
         if(active){setContext(data);setError('');setClock(Date.now());}
       } catch(e) {if(active)setError(e.message);}
     }
-    load();const timer=setInterval(load,5000);
+    load();const timer=setInterval(load,3000);
     return()=>{active=false;clearInterval(timer);};
   },[]);
   async function action(path,body){
@@ -35,7 +35,7 @@ export function MarketContextPanel({instruments=[], connected=true, preview=fals
   const stamp=(metric,maxSeconds=420)=>metric.time?<span className="mc-time">{contextTime(metric.time)}<em title="源行情时间的状态：最近表示在时效窗口内；滞后或历史表示旧时点，不能当作当前实时数据。" className={'mc-status '+sourceStatus(metric.time,clock,maxSeconds)}>{sourceStatus(metric.time,clock,maxSeconds)}</em></span>:null;
   return <section className={'market-context market-context--'+layout} aria-label="股指日内市场背景">
     <div className="mc-heading"><div><span className="mc-eyebrow">MARKET CONTEXT</span><h2>盘面底色 <span>{preview?'分支预览':archived?'历史快照':'观察中'}</span></h2></div>
-      <div className="mc-controls"><span>{context?.history_loading?`补齐${context.history_loading}历史基准…`:context?.busy?'正在查询…':context?.monitoring?'盘中每60秒更新':'按需更新'}</span>
+      <div className="mc-controls"><span>{context?.history_loading?`补齐${context.history_loading}历史基准…`:context?.busy?'正在查询…':context?.monitoring?`盘中每${context?.interval_seconds??30}秒更新`:'按需更新'}</span>
         <button disabled={pending||context?.busy||context?.disabled} onClick={()=>action('refresh')}>刷新</button>
         {!preview&&<button disabled={pending||context?.disabled} aria-pressed={!!context?.monitoring} onClick={()=>action('monitor',{enabled:!context?.monitoring})}>{context?.monitoring?'暂停更新':'盘中更新'}</button>}
       </div>

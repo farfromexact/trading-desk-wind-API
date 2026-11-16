@@ -34,9 +34,9 @@ node --test (Get-ChildItem frontend/src/*.test.js).FullName
 
 `install.ps1`会复用本机有效的官方SDK路径、按锁文件安装依赖，并执行`npm ci`和前端构建。这次没有更换依赖或Windows入口；重新执行安装器是为了确保拉取后的前后端版本一致。**仅pull、或仅刷新旧页面，不会自动生成新版`frontend/dist`。** 不复制Mac的虚拟环境、SDK或行情库。
 
-本次盘面底色及ETF统一复用唯一WindPy worker，不再需要MCP/CLI/API Key。五组上涨广度合并一次WSQ，右侧复用已有分钟线显示近5分钟相对强弱、成交偏向和广度差，不查询个股或板块名单。首次5分钟广度变化需要盘中积累；开启“盘中更新”后每60秒检查。每项指标旁的“?”支持悬停、键盘聚焦和点击固定说明，纯前端交互不增加Wind请求。
+本次盘面底色及ETF统一复用唯一WindPy worker，不再需要MCP/CLI/API Key。五组上涨广度合并一次WSQ，右侧复用已有分钟线显示近5分钟相对强弱、成交偏向和广度差，不查询个股或板块名单。首次5分钟广度变化需要盘中积累；开启“盘中更新”后每30秒检查。每项指标旁的“?”支持悬停、键盘聚焦和点击固定说明，纯前端交互不增加Wind请求。
 
-Windows期权仍使用原同步快照（每批最多60），Mac期权回调补数只在Darwin启用；新的市场背景WSQ回调快照则是两端共用。5/15分钟正式信号频率及门槛不变。本机225项Python、28项前端测试和构建通过；新增GitHub Actions在Windows/Linux执行相同离线检查，结果以对应PR检查为准。**CI不安装Wind SDK，本轮Windows原生SDK还需实机盘中复验**。
+Windows期权仍使用原同步快照（每批最多60），Mac期权回调补数只在Darwin启用；新的市场背景WSQ回调快照则是两端共用。5/15分钟正式信号频率及门槛不变。本机226项Python、28项前端测试和构建通过；新增GitHub Actions在Windows/Linux执行相同离线检查，结果以对应PR检查为准。**CI不安装Wind SDK，本轮Windows原生SDK还需实机盘中复验**。
 
 若要独立诊断SDK，保持看板停止后运行`.\.venv\Scripts\python.exe wind_check.py`，完成后再启动看板；不要与采集器并行运行。启动后刷新浏览器，检查当前交易中的期货、适用且未到期的期权、查看1分钟图的补数及重连计数。另检查盘面底色五卡、源时间、盘中5分钟变化及背景查询错误；ETF资金流unit缩放对照仍待核实。完整记录见[五组广度验证](../reports/five-index-context-2026-11-16.md)和[WindPy迁移报告](../reports/market-context-windpy-2026-11-16.md)，11月12日期权记录仍保留。
 
