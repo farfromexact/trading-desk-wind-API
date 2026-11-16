@@ -61,6 +61,8 @@ class Desk:
         self.running=True
         self.metrics={'started_at':iso(now()),'rule_version':self.config['version'],'first_live_at':None,'last_live_at':None,'healthy_seconds':0.,'quote_updates':0,'bar_batches':0,'live_confirmations':0,'restarts':0,'ui_samples':0,'ui_max_ms':0,'ui_over_2s':0,'source_ui_samples':0,'source_ui_max_ms':0,'source_ui_over_2s':0,'per_contract':{}}
         self.options=OptionsDesk(self)
+        self.context_waiters={}
+        self.context_paused_until=0.
         self.request_metrics={}
         self.quote_processing_lag_ms=0.
 
@@ -93,6 +95,34 @@ class Desk:
         self.pending[ident]={'cmd':cmd,'started':None,'generation':self.generation,'epoch':self.code_epochs.get(kwargs.get('code'),0)}
         self.commands.put(cmd)
         return ident
+
+    async def context_query(self, method, *args):
+        """Admit one optional query only after foreground work; never create another SDK process."""
+        deadline=time.monotonic()+20
+        while self.bootstrap and time.monotonic()<deadline:
+            if not self.running or not self.connected or self.reconnect_at:
+                raise ValueError('WindPy连接尚未就绪')
+            await asyncio.sleep(.1)
+        if self.offline or not self.running or not self.connected or self.reconnect_at:
+            raise ValueError('WindPy连接尚未就绪')
+        if self.bootstrap or self.context_waiters or any(p['cmd']['op']=='context' for p in self.pending.values()):
+            raise ValueError('主行情繁忙，本轮背景查询已让行')
+        if time.monotonic()<self.context_paused_until:
+            raise ValueError('背景查询暂缓，优先保障主行情；稍后可重试')
+        # The worker priority heap admits foreground jobs first; queued work expires after 15s.
+        future=asyncio.get_running_loop().create_future()
+        ident=self.submit('context',method=method,args=list(args),expires=time.monotonic()+15)
+        self.context_waiters[ident]=future
+        try:
+            return await future
+        finally:
+            self.context_waiters.pop(ident,None)
+
+    def cancel_context(self, message):
+        for future in self.context_waiters.values():
+            if not future.done():
+                future.set_exception(ValueError(message))
+        self.context_waiters.clear()
 
     def system_event(self, message, kind='system', **kwargs):
         event=dict(id=stable_id(kind,message,iso(now())),kind=kind,contract='',message=message,known_at=iso(now()),occurred_at=iso(now()),historical=False,**kwargs)
@@ -339,6 +369,14 @@ class Desk:
             seconds=packet.get('native_seconds',0.)
             metric=self.request_metrics.setdefault(cmd['op'],dict(count=0,max_seconds=0.,last_seconds=0.))
             metric.update(count=metric['count']+1,max_seconds=max(metric['max_seconds'],seconds),last_seconds=seconds)
+            if cmd['op']=='context':
+                future=self.context_waiters.get(packet['id'])
+                if seconds>2:
+                    self.context_paused_until=time.monotonic()+60
+                if future is not None and not future.done():
+                    if 'error' in packet:future.set_exception(ValueError(packet['error']))
+                    else:future.set_result(packet['payload'])
+                return
             if cmd['op']=='bars':
                 counts=metric.setdefault('by_timeframe',{})
                 tf=str(cmd['timeframe']); counts[tf]=counts.get(tf,0)+1
@@ -421,6 +459,8 @@ class Desk:
             self.apply_new_bars()
 
     def fail(self, message):
+        self.cancel_context('WindPy连接中断，背景查询已取消')
+        self.context_paused_until=time.monotonic()+300
         self.last_error=message
         self.feed_state='Wind 断开，准备重连'
         self.system_event(message,'data_error')
@@ -614,6 +654,7 @@ class Desk:
         self.begin_watch([root] if self.watch else None)
 
     def stop(self):
+        self.cancel_context('服务已停止')
         self.running=False
         if self.proc and self.proc.is_alive():
             self.commands.put({'id':'stop','op':'stop'})

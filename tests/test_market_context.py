@@ -64,7 +64,7 @@ def test_minute_ingestion_rejects_forming_bars_and_does_not_guess_units():
 def test_style_uses_common_end_and_breadth_never_crosses_lunch():
     b=ContextBook()
     add_window(b,'000852.SH','2026-11-13T14:00:00+08:00',finish=102)
-    add_window(b,'000016.SH','2026-11-13T14:00:00+08:00',finish=100.5)
+    add_window(b,'000300.SH','2026-11-13T14:00:00+08:00',finish=100.5)
     add_window(b,'000852.SH','2026-11-13T14:05:00+08:00',finish=110)
     assert b.view('2026-11-13T14:10:00+08:00')['style']['time']=='2026-11-13T14:00:00+08:00'
     for stamp,up in [('2026-11-13T11:30:00+08:00',300),('2026-11-13T13:05:00+08:00',400)]:
@@ -109,9 +109,10 @@ def test_query_failure_keeps_old_source_time(tmp_path):
     service=MarketContext(desk,tmp_path,client=FailedClient())
     service.book.updated_at='2026-11-13T15:00:00+08:00'
     asyncio.run(service.refresh())
-    assert service.error=='权限不足'
+    assert service.error=='指数广度：权限不足'
     assert service.book.updated_at=='2026-11-13T15:00:00+08:00'
-    assert service.calls==1
+    assert service.calls==3  # Independent ETF sections still run when breadth fails.
+    assert set(service.etf_errors)=={'flow','daily'}
 
 
 def test_schedule_crosses_confirmation_boundary_without_waiting_five_minutes():
@@ -136,7 +137,7 @@ def test_refresh_retries_delayed_complete_bar_and_does_not_repeat_healthy_indice
                 code=params['windcode']
                 labels=['09:35','09:40','09:45','09:50']
                 # One provider remains delayed for the first post-confirmation attempt.
-                if at.minute==51 and code==INDICES['IH']:labels=labels[:-1]
+                if at.minute==51 and code==INDICES['IF']:labels=labels[:-1]
                 rows=[dict(TIME=f'2026-11-16T{t}:00+08:00',MATCH='100',TURNOVER='10') for t in labels]
             return {'content':[{'type':'text','text':__import__('json').dumps({'data':rows})}]}
     service=MarketContext(SimpleNamespace(offline=False,watch={},calendar=set()),tmp_path,Client())
@@ -144,16 +145,21 @@ def test_refresh_retries_delayed_complete_bar_and_does_not_repeat_healthy_indice
     service.refresh_etfs=no_extra
     service.refresh_history=no_extra
     asyncio.run(service.refresh())
-    assert service.book.view(at)['style']['value'] is None
+    assert service.book.view(at)['style']['time'].endswith('09:45:00+08:00')
     at=dt('2026-11-16T09:51:06+08:00')
     asyncio.run(service.refresh())
-    assert service.book.view(at)['style']['value'] is None
+    assert service.book.view(at)['style']['time'].endswith('09:45:00+08:00')
     at=dt('2026-11-16T09:52:06+08:00')
     asyncio.run(service.refresh())
     assert service.book.view(at)['style']['value']==0
+    assert service.book.view(at)['style']['time'].endswith('09:50:00+08:00')
+    snapshots=[p['windcode'] for t,p in calls if t=='get_index_price_indicators']
+    assert all(set(c.split(','))=={'000016.SH','000300.SH','000852.SH','000688.SH','399006.SZ'} for c in snapshots)
     minute_codes=[p['windcode'] for t,p in calls if t=='get_index_kline']
+    assert set(minute_codes)==set(INDICES.values())  # No new board WSI or membership lookups.
+    assert {t for t,p in calls}=={'get_index_price_indicators','get_index_kline'}
     assert minute_codes.count(INDICES['IM'])==2
-    assert minute_codes.count(INDICES['IH'])==3
+    assert minute_codes.count(INDICES['IF'])==3
 
 
 def test_history_backfill_is_bounded_prior_only_one_index_per_refresh_and_reuses_cache(tmp_path,monkeypatch):
@@ -209,3 +215,102 @@ def test_history_failure_preserves_live_data_and_backs_off(tmp_path,monkeypatch)
     assert set(service.history_errors)==set(INDICES)
     assert service.error is None and service.history_loading is None
     assert service.book.window(INDICES['IM'],'2026-11-16T09:50:00+08:00')['amount']==300
+
+
+def snapshot(book, code, stamp, up, down, same=0):
+    book.add_snapshots([{'Wind代码':code,'交易时间':stamp,'上涨家数':up,
+                         '下跌家数':down,'平盘家数':same}],{})
+
+
+def test_five_universes_are_independent_and_change_uses_source_five_minutes():
+    from app.market_context import COUNTS
+    b=ContextBook()
+    for code,total in COUNTS.items():
+        total=total or {'000688.SH':619,'399006.SZ':1370}[code]
+        snapshot(b,code,'2026-11-16T09:59:30+08:00',10,total-10)
+        snapshot(b,code,'2026-11-16T10:00:00+08:00',20,total-20)
+        snapshot(b,code,'2026-11-16T10:05:00+08:00',30,total-30)
+    view=b.view('2026-11-16T10:06:00+08:00')
+    assert len(view['breadths'])==5
+    for row in view['breadths']:
+        assert row['change_pp']==pytest.approx(10/(row['expected'] or row['count_total'])*100)
+        assert row['previous_time']=='2026-11-16T10:00:00+08:00'
+    snapshot(b,'000688.SH','2026-11-16T10:06:00+08:00',30,-1)
+    rows={r['code']:r for r in b.view('2026-11-16T10:07:00+08:00')['breadths']}
+    assert rows['000688.SH']['value'] is None
+    assert rows['399006.SZ']['value']==pytest.approx(30/1370*100)
+
+
+@pytest.mark.parametrize('previous,current',[
+    ('2026-11-16T09:58:29+08:00','2026-11-16T10:05:00+08:00'),
+    ('2026-11-16T10:00:01+08:00','2026-11-16T10:05:00+08:00'),
+    ('2026-11-16T11:30:00+08:00','2026-11-16T13:05:00+08:00'),
+    ('2026-11-13T10:00:00+08:00','2026-11-16T10:05:00+08:00'),
+])
+def test_five_minute_breadth_does_not_substitute_wrong_time(previous,current):
+    b=ContextBook()
+    snapshot(b,'000852.SH',previous,200,800)
+    snapshot(b,'000852.SH',current,300,700)
+    assert b.view(current)['breadth']['change_pp'] is None
+
+
+def test_breadth_gap_requires_synchronized_current_and_previous_pairs():
+    b=ContextBook()
+    for time,small,large in [('10:00:00',500,150),('10:05:00',600,120)]:
+        snapshot(b,'000852.SH','2026-11-16T'+time+'+08:00',small,1000-small)
+        snapshot(b,'000300.SH','2026-11-16T'+time+'+08:00',large,300-large)
+    gap=b.view('2026-11-16T10:06:00+08:00')['rotation']['breadth_gap']
+    assert gap['value']==20 and gap['change_pp']==20
+    snapshot(b,'000300.SH','2026-11-16T10:05:11+08:00',120,180)
+    assert b.view('2026-11-16T10:06:00+08:00')['rotation']['breadth_gap']['value'] is None
+
+
+def test_strength_five_minutes_and_turnover_paired_ratio_baseline():
+    b=ContextBook();end=dt('2026-11-16T14:00:00+08:00')
+    for i in range(1,11):
+        for code,amount in [('000852.SH',100),('000300.SH',200)]:
+            add_window(b,code,end-timedelta(days=i),amount=amount)
+    add_window(b,'000852.SH',end,amount=300,finish=102)
+    add_window(b,'000300.SH',end,amount=200,finish=101)
+    rotation=b.view(end+timedelta(seconds=65))['rotation']
+    assert rotation['strength']['value']==pytest.approx(1)
+    assert rotation['turnover']['value']==3
+    assert rotation['turnover']['baseline_days']==10
+    # Incomplete paired coverage cannot borrow the other index's unmatched day.
+    del b.bars['000300.SH'][iso(end-timedelta(days=10))]
+    assert b.view(end+timedelta(seconds=65))['rotation']['turnover']['value'] is None
+    # Neither a future day nor today's amount is a baseline sample.
+    add_window(b,'000300.SH',end+timedelta(days=1))
+    add_window(b,'000852.SH',end+timedelta(days=1))
+    assert b.view(end+timedelta(seconds=65))['rotation']['turnover']['baseline_days']==9
+
+
+def test_latest_complete_strength_rejects_gaps_and_five_minute_lunch_crossing():
+    b=ContextBook()
+    for code in ('000852.SH','000300.SH'):
+        add_window(b,code,'2026-11-16T14:00:00+08:00')
+    assert b.view('2026-11-16T14:01:04+08:00')['style']['time'].endswith('13:55:00+08:00')
+    del b.bars['000300.SH']['2026-11-16T13:55:00+08:00']
+    assert b.view('2026-11-16T14:01:05+08:00')['style']['value'] is None
+    assert b.window('000852.SH','2026-11-16T13:00:00+08:00',5) is None
+
+
+def test_repeated_close_snapshot_does_not_create_history():
+    b=ContextBook()
+    for _ in range(3):snapshot(b,'000852.SH','2026-11-16T15:00:06+08:00',295,686,19)
+    row=b.view('2026-11-16T21:00:00+08:00')['breadth']
+    assert len(row['trend'])==1 and row['change_pp'] is None
+
+
+
+def test_board_vendor_scope_is_explicit_and_never_claims_index_coverage():
+    b=ContextBook();stamp='2026-11-16T15:00:03+08:00'
+    snapshot(b,'000688.SH',stamp,39,573,7)
+    row=b.breadth_view('000688.SH',dt(stamp))
+    assert row['value']==pytest.approx(39/612*100)
+    assert row['expected'] is None and row['coverage']=='vendor_reported'
+    assert b.snapshots['000688.SH'][stamp]['scope_ok'] is None
+    snapshot(b,'000852.SH',stamp,39,573,7)
+    assert b.breadth_view('000852.SH',dt(stamp))['value'] is None
+    snapshot(b,'000688.SH',stamp,39,-1,7)
+    assert b.breadth_view('000688.SH',dt(stamp))['value'] is None

@@ -14,7 +14,7 @@
 `.gitattributes` 固定 Shell/Python 等为 LF、PowerShell/CMD 为 CRLF，减少跨系统换行差异。
 本次不进行整个仓库的换行重写；已有工作树可能在后续检出时才按规则规范化。
 
-## Windows 接手本次更新（2026-11-12）
+## Windows 接手本次更新（2026-11-16）
 
 同一仓库、同一条`main`主线。先在Windows仓库目录检查工作区；若有未提交修改，先保存或提交，遇到冲突检查双方内容，不使用`reset --hard`覆盖。确认本机Wind已安装并登录。
 
@@ -34,9 +34,11 @@ node --test (Get-ChildItem frontend/src/*.test.js).FullName
 
 `install.ps1`会复用本机有效的官方SDK路径、按锁文件安装依赖，并执行`npm ci`和前端构建。这次没有更换依赖或Windows入口；重新执行安装器是为了确保拉取后的前后端版本一致。**仅pull、或仅刷新旧页面，不会自动生成新版`frontend/dist`。** 不复制Mac的虚拟环境、SDK或行情库。
 
-本次Windows仍使用原同步期权快照（每批最多60），Mac回调补数只在Darwin启用。共享降频、完整盘口判断、到期停止补数和橙红灯效会一起更新；5/15分钟正式信号频率及门槛不变。已有170项Python与14项前端测试、Mac夜盘实测记录，**本轮Windows原生SDK还需实机盘中复验**。
+本次盘面底色及ETF统一复用唯一WindPy worker，不再需要MCP/CLI/API Key。五组上涨广度合并一次WSQ，右侧复用已有分钟线显示近5分钟相对强弱、成交偏向和广度差，不查询个股或板块名单。首次5分钟广度变化需要盘中积累；开启“盘中更新”后每60秒检查。每项指标旁的“?”支持悬停、键盘聚焦和点击固定说明，纯前端交互不增加Wind请求。
 
-若要独立诊断SDK，保持看板停止后运行`.\.venv\Scripts\python.exe wind_check.py`，完成后再启动看板；不要与采集器并行运行。启动后刷新浏览器，检查当前交易中的期货、适用且未到期的期权、查看1分钟图的补数及重连计数。完整记录见[本次验证报告](../reports/refresh-pressure-and-atmosphere-2026-11-12.md)。
+Windows期权仍使用原同步快照（每批最多60），Mac期权回调补数只在Darwin启用；新的市场背景WSQ回调快照则是两端共用。5/15分钟正式信号频率及门槛不变。本机225项Python、28项前端测试和构建通过；新增GitHub Actions在Windows/Linux执行相同离线检查，结果以对应PR检查为准。**CI不安装Wind SDK，本轮Windows原生SDK还需实机盘中复验**。
+
+若要独立诊断SDK，保持看板停止后运行`.\.venv\Scripts\python.exe wind_check.py`，完成后再启动看板；不要与采集器并行运行。启动后刷新浏览器，检查当前交易中的期货、适用且未到期的期权、查看1分钟图的补数及重连计数。另检查盘面底色五卡、源时间、盘中5分钟变化及背景查询错误；ETF资金流unit缩放对照仍待核实。完整记录见[五组广度验证](../reports/five-index-context-2026-11-16.md)和[WindPy迁移报告](../reports/market-context-windpy-2026-11-16.md)，11月12日期权记录仍保留。
 
 `--check` 仅检查路径；`wind_check.py` 才会加载 SDK、登录并执行一个 WSS 查询。
 SDK 安装目录非默认时，先指定包含 `WindPy.py` 的目录，例如：
@@ -113,3 +115,16 @@ Remove-Item Env:WIND_DESK_OPTIONS_DISABLED
 
 
 本轮盘中复现过一次Mac同步 `option_snapshot AG` 45秒超时，随后增加Mac临时期权回调快照路径（`app/wind_snapshots.py`）。临时请求与常驻订阅分开管理，回调只入队，注册/取消仍在唯一Wind工作线程执行；缺少完整字段达到10秒等待期限后在下一轮调度结束本轮并记录缺失，不重置整条连接。Windows继续原同步路径；两端同一套完整性和新鲜度门槛，不因平台不同改变估值或信号规则。后续验证须区分 `waiting_callback` 与原生调用执行时间。
+
+## 2026-11-16 盘面底色迁移到 WindPy
+
+- 正式运行已移除MCP CLI/API Key依赖。两端均使用原有唯一WindPy进程，不需要安装任何MCP skill或复制认证文件。只需官方SDK与本机Wind登录及数据权限。
+- 背景请求进入共用低优先级队列；WSQ两端均使用临时回调，WSI/WSD串行执行。Windows原期权同步路径不受此背景迁移改变。
+- 单日期多基金WSD兼容两种明确的矩阵布局（field×code 与 code×time），不按平台猜值，严格核对日期、字段和代码。
+- 更新步骤仍为检查工作区→停止旧服务→pull→安装/构建→pytest/Node测试→启动。不要同时运行wind_check.py或第二个WindPy进程。
+- 在Windows实机验证三指数及两板块广度、原三指数成交活跃度、三只ETF的日频流向及净申赎、实际数据日、后台原生请求耗时与重连计数。盘中同时观察原有5/15分钟信号和期权；Mac收盘后验证不能替代该验收。
+- 新缓存为 `data/market-context-windpy.json`，旧MCP缓存留存但不加载。背景失败保留旧源时间，不补零，不降低行情门槛。详见[本轮报告](../reports/market-context-windpy-2026-11-16.md)。
+
+### 五组广度与5分钟风格观察
+
+11月16日追加：WSQ广度扩为50/300/1000/科创板/创业板，只有一个批次；后两者不新增WSI。右侧1000/300的5分钟相对强弱、成交偏向复用现有分钟线和历史缓存；广度差需同步源时钟，近5分钟变化没有历史样本时保持待积累。原成交活跃度15分钟、交易信号5/15分钟、期权门槛不变。Windows拉取后运行Python/Node测试并重建前端、重启；需盘中检验三指数及两板块回调覆盖、5分钟变化及同步/午休边界，不将Mac夜盘商品行情验证称为Windows日盘验收。详见 `reports/five-index-context-2026-11-16.md`。
