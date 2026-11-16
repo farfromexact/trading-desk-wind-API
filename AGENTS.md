@@ -62,3 +62,8 @@
 
 - 指标旁新增前端说明按钮，悬停/聚焦查看，点击固定、Esc/点空白关闭，不新增API请求。
 - `.github/workflows/checks.yml` 对PR和main执行Windows/Linux离线pytest、Node测试与构建；CI不带Wind SDK，不得称为Windows行情实测。Windows更新必须停止旧服务、pull main、运行install.ps1重建前端、再启动；详见docs/CROSS_PLATFORM.md。
+
+## 2026-11-16 刷新间隔调整
+
+- 盘面底色刷新冷却由60秒缩短为30秒；页面每3秒读本机缓存，显示后端返回的interval_seconds。ETF日频资金流独立保持至少60秒，估算申赎缓存、分钟线完整标签、主行情优先级不变。
+- 本机226项pytest、28项Node测试与构建通过。21:53:45重启后通过唯一采集器串行执行相隔31秒的两次刷新，均完成且无背景错误，重连计数0；这是收盘后短时验证，不是Windows或现货盘中稳定性验收。发布状态以主线提交和对应PR为准。

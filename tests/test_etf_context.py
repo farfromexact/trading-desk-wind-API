@@ -90,6 +90,8 @@ def test_partial_invalid_etf_response_retains_last_good_observation_without_refr
 
 
 def test_daily_success_is_cached_once_per_day_and_flow_failure_is_isolated(tmp_path,monkeypatch):
+    tick=[100.]
+    monkeypatch.setattr('app.market_context.time',SimpleNamespace(monotonic=lambda:tick[0]))
     at=dt('2026-11-14T14:00:00+08:00')
     monkeypatch.setattr('app.market_context.now',lambda:at)
     service=MarketContext(SimpleNamespace(offline=False,watch={},calendar=set()),tmp_path)
@@ -101,6 +103,7 @@ def test_daily_success_is_cached_once_per_day_and_flow_failure_is_isolated(tmp_p
         return [dict(code=s['code'],data_date='2026-11-13',value='0') for s in ETF_SAMPLES.values()],{DAILY_FIELD:'元'}
     async def check():
         await service.refresh_etfs(query)
+        tick[0]+=60
         await service.refresh_etfs(query)
     asyncio.run(check())
     assert calls.count('fund_get_listed_historical_price')==1
