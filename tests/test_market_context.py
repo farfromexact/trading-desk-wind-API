@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.domain import dt, iso
-from app.market_context import ContextBook, MarketContext, mcp_rows
+from app.market_context import ContextBook, MarketContext, mcp_rows, completed_cash_bar, cash_bar_labels, INDICES
 
 
 def add_window(book, code, end, amount=100, start=100, finish=101):
@@ -112,3 +112,100 @@ def test_query_failure_keeps_old_source_time(tmp_path):
     assert service.error=='权限不足'
     assert service.book.updated_at=='2026-11-13T15:00:00+08:00'
     assert service.calls==1
+
+
+def test_schedule_crosses_confirmation_boundary_without_waiting_five_minutes():
+    day='2026-11-16'
+    assert completed_cash_bar(day,day+'T09:36:04+08:00') is None
+    assert completed_cash_bar(day,day+'T09:51:04+08:00').endswith('09:45:00+08:00')
+    assert completed_cash_bar(day,day+'T09:51:05+08:00').endswith('09:50:00+08:00')
+    assert completed_cash_bar(day,day+'T12:30:00+08:00').endswith('11:30:00+08:00')
+
+
+def test_refresh_retries_delayed_complete_bar_and_does_not_repeat_healthy_indices(tmp_path,monkeypatch):
+    at=dt('2026-11-16T09:50:58+08:00')
+    monkeypatch.setattr('app.market_context.now',lambda:at)
+    calls=[]
+    class Client:
+        async def call(self,tool,params):
+            calls.append((tool,params))
+            if tool=='get_index_price_indicators':
+                rows=[{'Wind代码':code,'最新交易日':'20261116','交易时间':iso(at),
+                       '上涨家数':1,'下跌家数':999,'平盘家数':0} for code in INDICES.values()]
+            else:
+                code=params['windcode']
+                labels=['09:35','09:40','09:45','09:50']
+                # One provider remains delayed for the first post-confirmation attempt.
+                if at.minute==51 and code==INDICES['IH']:labels=labels[:-1]
+                rows=[dict(TIME=f'2026-11-16T{t}:00+08:00',MATCH='100',TURNOVER='10') for t in labels]
+            return {'content':[{'type':'text','text':__import__('json').dumps({'data':rows})}]}
+    service=MarketContext(SimpleNamespace(offline=False,watch={},calendar=set()),tmp_path,Client())
+    async def no_extra(*args):pass
+    service.refresh_etfs=no_extra
+    service.refresh_history=no_extra
+    asyncio.run(service.refresh())
+    assert service.book.view(at)['style']['value'] is None
+    at=dt('2026-11-16T09:51:06+08:00')
+    asyncio.run(service.refresh())
+    assert service.book.view(at)['style']['value'] is None
+    at=dt('2026-11-16T09:52:06+08:00')
+    asyncio.run(service.refresh())
+    assert service.book.view(at)['style']['value']==0
+    minute_codes=[p['windcode'] for t,p in calls if t=='get_index_kline']
+    assert minute_codes.count(INDICES['IM'])==2
+    assert minute_codes.count(INDICES['IH'])==3
+
+
+def test_history_backfill_is_bounded_prior_only_one_index_per_refresh_and_reuses_cache(tmp_path,monkeypatch):
+    at=dt('2026-11-16T10:00:00+08:00')
+    monkeypatch.setattr('app.market_context.now',lambda:at)
+    days=[(at-timedelta(days=i)).date().isoformat() for i in range(1,21)]
+    desk=SimpleNamespace(offline=False,watch={},calendar=set(days+[at.date().isoformat(),'2026-11-17']))
+    service=MarketContext(desk,tmp_path)
+    calls=[]
+    async def query(tool,params):
+        calls.append(params)
+        assert params['begin_date']==min(days) and params['end_date']==max(days)
+        return [dict(TIME=t,MATCH='100',TURNOVER='100') for day in days for t in cash_bar_labels(day)],{'TURNOVER':'元'}
+    async def check():
+        for expected in (1,2,3,3):
+            await service.refresh_history(query,at.date().isoformat())
+            assert len(calls)==expected
+    asyncio.run(check())
+    assert not service.history_errors
+    for code in INDICES.values():
+        add_window(service.book,code,'2026-11-16T09:50:00+08:00',amount=200)
+    assert service.book.view(at)['activity']['IM']['value']==2
+    # A new service can reuse persisted history without new requests.
+    import json
+    service.path.write_text(json.dumps(service.book.json()),encoding='utf-8')
+    restored=MarketContext(desk,tmp_path)
+    asyncio.run(restored.refresh_history(query,at.date().isoformat()))
+    assert len(calls)==3
+    at=at+timedelta(days=1)
+    async def next_day_query(tool,params):
+        calls.append(params)
+        assert params['begin_date']==params['end_date']=='2026-11-16'
+        return [dict(TIME=t,MATCH='100',TURNOVER='100') for t in cash_bar_labels('2026-11-16')],{'TURNOVER':'元'}
+    asyncio.run(restored.refresh_history(next_day_query,'2026-11-17'))
+    assert len(calls)==4
+
+
+def test_history_failure_preserves_live_data_and_backs_off(tmp_path,monkeypatch):
+    at=dt('2026-11-16T10:00:00+08:00')
+    monkeypatch.setattr('app.market_context.now',lambda:at)
+    days={(at-timedelta(days=i)).date().isoformat() for i in range(1,21)}
+    service=MarketContext(SimpleNamespace(offline=False,watch={},calendar=days),tmp_path)
+    add_window(service.book,INDICES['IM'],'2026-11-16T09:50:00+08:00')
+    calls=[]
+    async def query(tool,params):
+        calls.append(params['windcode'])
+        # Out-of-range data and unknown units must not create a baseline.
+        return [dict(TIME='2026-11-16T09:50:00+08:00',MATCH='999',TURNOVER='99')],{}
+    async def check():
+        for _ in range(4):await service.refresh_history(query,'2026-11-16')
+    asyncio.run(check())
+    assert calls==list(INDICES.values())
+    assert set(service.history_errors)==set(INDICES)
+    assert service.error is None and service.history_loading is None
+    assert service.book.window(INDICES['IM'],'2026-11-16T09:50:00+08:00')['amount']==300

@@ -34,7 +34,7 @@ export function MarketContextPanel({instruments=[], connected=true, preview=fals
   const stamp=(metric,maxSeconds=420)=>metric.time?<span className="mc-time">{contextTime(metric.time)}<em className={'mc-status '+sourceStatus(metric.time,clock,maxSeconds)}>{sourceStatus(metric.time,clock,maxSeconds)}</em></span>:null;
   return <section className={'market-context market-context--'+layout} aria-label="股指日内市场背景">
     <div className="mc-heading"><div><span className="mc-eyebrow">MARKET CONTEXT</span><h2>盘面底色 <span>{preview?'分支预览':archived?'历史快照':'观察中'}</span></h2></div>
-      <div className="mc-controls"><span>{context?.busy?'正在查询…':context?.monitoring?'盘中每60秒更新':'按需更新'}</span>
+      <div className="mc-controls"><span>{context?.history_loading?`补齐${context.history_loading}历史基准…`:context?.busy?'正在查询…':context?.monitoring?'盘中每60秒更新':'按需更新'}</span>
         <button disabled={pending||context?.busy||context?.disabled} onClick={()=>action('refresh')}>刷新</button>
         {!preview&&<button disabled={pending||context?.disabled} aria-pressed={!!context?.monitoring} onClick={()=>action('monitor',{enabled:!context?.monitoring})}>{context?.monitoring?'暂停更新':'盘中更新'}</button>}
       </div>
@@ -70,6 +70,7 @@ export function MarketContextPanel({instruments=[], connected=true, preview=fals
       </td>)}</tr>
     </tbody></table><div className="mc-etf-foot"><span>盘中累计与日频申赎分开看 · 不相加 · 单只ETF样本</span><span>{Object.keys(context?.etf_errors||{}).length?'部分ETF未更新，保留源时间':'日频披露时刻未核实'}</span></div></div>
     {(error||context?.error)&&<div className="mc-error" role="status">{error||context.error} · 原数据保留时间标记</div>}
+    {Object.keys(context?.history_errors||{}).length>0&&<div className="mc-error" role="status">{Object.entries(context.history_errors).map(([root,message])=>`${root==='calendar'?'基准':root}：${message}`).join('；')}</div>}
     <details className="mc-details"><summary>口径与时间 <span>背景观察 · 不计分</span></summary>
       <div className="mc-definitions">{metrics.map(metric=><p key={metric.label}><b>{metric.label}</b>{metric.detail||'等待已确认结构；行情不就绪时不推定位置。'}</p>)}</div>
       <p>商品仅含已监测的 AG、AU、SC 样本；国债仅含 T、TL。各合约保留自己的交易日与时间，夜盘与日盘不直接加总。涨跌幅为行情源口径；成交额为名义成交额，不能当作资金净流入。</p>
@@ -78,7 +79,7 @@ export function MarketContextPanel({instruments=[], connected=true, preview=fals
       <p>日频净申赎采用 f_mf_netsubamt（申赎净流入额），金额原单位为元；样本审计中等于份额净变动×当日单位净值，不是盘中逐笔现金到账。本模块只查询当前日期之前的交易日，非交易日按服务返回的实际数据日展示。数据日、本机收到时间与实际披露时刻是不同概念，后者未核实，不能将历史日频数回填为当日盘中已知。每种宽基仅展示列明的单只ETF，不代表同指数全部产品。</p>
       {etfs.map(row=><p key={row.code}>{row.name} {row.code}：资金流源时间 {row.flow.time||'未取得'}；日频数据日 {row.daily.data_date||'未取得'}；日频本机收到 {row.daily.observed_at||'未取得'}；{context?.etf_errors?.flow||context?.etf_errors?.daily||'无本轮ETF查询错误'}</p>)}
       <p>科创/创业板广度及期货资金流字段尚未接入这一版。所有空值保持缺失；这组背景不改变原有机会确认或声音规则。</p>
-      <p>完整分钟线至少在标签后65秒采用。历史基准冷启动需积累或导入；不回填历史分钟广度。每分钟批量查询指数及ETF快照，每5分钟补三只指数分钟线和一批跨市场快照；日频申赎正常每自然日查询一次，失败或缺失间隔30分钟再尝试。开启后约672次业务查询/完整股指交易日，另加日频批次；额度按服务实际规则计算。</p>
+      <p>完整分钟线至少在标签后65秒采用；随后每分钟检查新完整标签，缺失则下一轮重查，不提前使用未收盘数据。历史成交基准按已有交易日历自动补此前20个交易日，每轮最多补一只指数，缓存复用；失败或覆盖不足间隔30分钟再试，不回填历史分钟广度。每分钟批量查询指数及ETF快照，三只指数分钟线随新完整5分钟标签更新；跨市场每5分钟更新。日频申赎正常每自然日一次。正常约672次业务查询/完整股指交易日，另加日频、冷启动补历史和缺失重查；额度按服务实际规则计算。</p>
       <p className="mc-source">数据来源于 Wind Alice 万得金融数据服务。最近成功刷新 {contextTime(context?.updated_at)}</p>
     </details>
   </section>;

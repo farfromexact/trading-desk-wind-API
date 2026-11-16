@@ -22,6 +22,18 @@ NAMES = {'000852.SH': '中证1000', '000300.SH': '沪深300', '000016.SH': '上�
 FIELDS = '最新交易日,交易时间,中文简称,最新成交价,涨跌幅,成交额,上涨家数,下跌家数,平盘家数'
 
 
+def cash_bar_labels(day):
+    start = dt(day+'T00:00:00+08:00')
+    return [iso(start+timedelta(minutes=m)) for m in
+            [*range(575, 691, 5), *range(785, 901, 5)]]
+
+
+def completed_cash_bar(day, at):
+    """Schedule against eligible labels, not the wall-clock five-minute bucket."""
+    return max((t for t in cash_bar_labels(day)
+                if dt(t)+timedelta(seconds=65) <= dt(at)), default=None)
+
+
 def number(value):
     try:
         result = float(value)
@@ -139,6 +151,8 @@ class ContextBook:
         incoming = flow_records(rows, units, received_at, number)
         for code, row in incoming.items():
             old = self.etf_flow.get(code, {})
+            if old.get('time') and old.get('value') is not None and (not row['time'] or row['value'] is None):
+                continue
             if row['time'] and old.get('time') and dt(row['time']) < dt(old['time']):
                 continue
             self.etf_flow[code] = row
@@ -147,6 +161,8 @@ class ContextBook:
     def add_etf_daily(self, rows, units, received_at):
         incoming = daily_records(rows, units, received_at, number)
         for code, row in incoming.items():
+            if self.etf_daily.get(code, {}).get('value') is not None and row['value'] is None:
+                continue
             if row['data_date'] < self.etf_daily.get(code, {}).get('data_date', ''):
                 continue
             self.etf_daily[code] = row
@@ -203,6 +219,11 @@ class ContextBook:
         amounts = [v.get('amount') for v in values[1:]]
         return dict(return_pct=result, amount=sum(amounts) if all(v is not None for v in amounts) else None)
 
+    def history_days(self, code, days):
+        rows = self.bars.get(code, {})
+        return [day for day in days if all(
+            rows.get(t, {}).get('amount') is not None for t in cash_bar_labels(day))]
+
     def view(self, at=None):
         at = dt(at or now())
         breadth = self.snapshots.get(INDICES['IM'], {})
@@ -242,7 +263,7 @@ class ContextBook:
                     samples = [self.window(code, day+end[10:]) for day in days]
                     amounts = [s['amount'] for s in samples if s and s['amount'] is not None and s['amount'] > 0]
                     value.update(time=end, baseline_days=len(amounts), amount=window['amount'],
-                                 reason='历史同刻基准不足10天')
+                                 reason=f'历史同刻基准 {len(amounts)}/10日 · 不足')
                     if len(amounts) >= 10:
                         value.update(value=window['amount']/statistics.median(amounts), reason='')
             activity[root] = value
@@ -273,7 +294,11 @@ class MarketContext:
         self.monitor = False
         self.task = None
         self.last_attempt = float('-inf')
-        self.last_bars_slot = None
+        self.last_bars_slot = {}
+        self.last_cross_slot = None
+        self.history_attempts = {}
+        self.history_errors = {}
+        self.history_loading = None
         self.error = None
         self.calls = 0
         self.etf_errors = {}
@@ -283,6 +308,7 @@ class MarketContext:
         return dict(**self.book.view(), busy=bool(self.task and not self.task.done()),
                     monitoring=self.monitor, disabled=self.disabled, error=self.error,
                     calls=self.calls, etf_errors=self.etf_errors,
+                    history_loading=self.history_loading, history_errors=self.history_errors,
                     source='Wind Alice 万得金融数据服务', interval_seconds=60)
 
     def request_refresh(self):
@@ -320,13 +346,20 @@ class MarketContext:
             if len(day) != 8 or not day.isdigit():
                 raise ValueError('指数快照缺少交易日')
             day = f'{day[:4]}-{day[4:6]}-{day[6:]}'
-            slot = day+'-'+now().strftime('%H:')+str(now().minute//5)
-            if slot != self.last_bars_slot:
+            target = completed_cash_bar(day, now())
+            if target:
                 for code in INDICES.values():
+                    if self.last_bars_slot.get(code) == target:
+                        continue
                     rows, units = await query('get_index_kline', dict(windcode=code, begin_date=day, end_date=day, period='3', count=-24))
                     if not rows:
                         raise ValueError('Wind 分钟线为空')
                     self.book.add_bars(code, rows, units, now())
+                    # A delayed provider must be retried next minute, not considered complete.
+                    if target in self.book.bars.get(code, {}):
+                        self.last_bars_slot[code] = target
+            slot = day+'-'+now().strftime('%H:')+str(now().minute//5)
+            if slot != self.last_cross_slot:
                 codes = [self.desk.watch[r] for r in ('AG', 'AU', 'SC', 'T', 'TL') if self.desk.watch.get(r)]
                 if codes:
                     rows, _ = await query('securities_get_price', dict(windCodes=codes))
@@ -336,10 +369,11 @@ class MarketContext:
                                             change_pct=number(r.get('涨跌幅')),
                                             amount=number(r.get('成交额')) if r.get('indicator_units', {}).get('成交额') == '元' else None)
                                        for r in rows if r.get('windcode') in codes]
-                self.last_bars_slot = slot
+                self.last_cross_slot = slot
             self.book.updated_at = iso(now())
             # Independent ETF failures do not discard index/cross-market observations.
             await self.refresh_etfs(query)
+            await self.refresh_history(query, day)
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError:
@@ -354,6 +388,42 @@ class MarketContext:
                 temporary.replace(self.path)
             except OSError:
                 self.error = '背景缓存写入失败，本轮仅保留内存数据'
+
+    async def refresh_history(self, query, day):
+        # Cold start adds at most one bounded request per refresh, after live snapshots.
+        # CFFEX cash-equity trading dates are already owned by the running desk.
+        days = sorted(d for d in self.desk.calendar if d < day)[-20:]
+        if len(days) < 10:
+            self.history_errors['calendar'] = '历史基准等待至少10个交易日的日历'
+            return
+        self.history_errors.pop('calendar', None)
+        for root, code in INDICES.items():
+            complete_days = set(self.book.history_days(code, days))
+            missing = [d for d in days if d not in complete_days]
+            if not missing:
+                self.history_errors.pop(root, None)
+                continue
+            if time.monotonic()-self.history_attempts.get(code, float('-inf')) < 1800:
+                continue
+            self.history_attempts[code] = time.monotonic()
+            self.history_loading = root
+            try:
+                rows, units = await query('get_index_kline', dict(
+                    windcode=code, begin_date=missing[0], end_date=missing[-1], period='3', count=0))
+                allowed = set(missing)
+                rows = [r for r in rows if str(r.get('TIME', ''))[:10] in allowed]
+                self.book.add_bars(code, rows, units, now())
+                complete = len(self.book.history_days(code, days))
+                if complete != len(days):
+                    raise ValueError('历史覆盖或金额单位不足')
+                self.history_errors.pop(root, None)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.history_errors[root] = '历史基准未完整补齐，30分钟后重试'
+            finally:
+                self.history_loading = None
+            break
 
     async def refresh_etfs(self, query):
         codes = [sample['code'] for sample in ETF_SAMPLES.values()]

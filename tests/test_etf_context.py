@@ -49,8 +49,10 @@ def test_intraday_and_daily_values_remain_separate_and_units_fail_closed():
     result=next(x for x in book.view('2026-11-14T14:01:00+08:00')['etfs'] if x['root']=='IF')
     assert result['flow']['value']==-100 and result['daily']['value']==200
     assert 'total' not in result and result['flow']['frequency']!='daily'
-    book.add_etf_flow([flow_row('99')],{},'2026-11-14T14:02:00+08:00')
-    assert book.etf_flow['510300.SH']['value'] is None
+    incoming=book.add_etf_flow([flow_row('99')],{},'2026-11-14T14:02:00+08:00')
+    assert incoming['510300.SH']['value'] is None
+    assert book.etf_flow['510300.SH']['value']==-100
+    assert book.etf_flow['510300.SH']['observed_at']=='2026-11-14T14:00:00+08:00'
     assert book.etf_daily['510300.SH']['value']==200
 
 
@@ -69,6 +71,22 @@ def test_out_of_order_fund_snapshots_do_not_replace_newer_observations():
     book.add_etf_flow([flow_row('1')],{'当日主力净流入额':'元'},'2026-11-14T14:00:00+08:00')
     book.add_etf_flow([flow_row('2','2026-11-13T15:29:17+08:00')],{'当日主力净流入额':'元'},'2026-11-14T14:01:00+08:00')
     assert book.etf_flow['510300.SH']['value']==1
+
+
+def test_partial_invalid_etf_response_retains_last_good_observation_without_refreshing_its_clock():
+    book=ContextBook()
+    book.add_etf_flow([flow_row('123')],{'当日主力净流入额':'元'},'2026-11-14T14:00:00+08:00')
+    before=dict(book.etf_flow['510300.SH'])
+    incoming=book.add_etf_flow([flow_row('999','')],{'当日主力净流入额':'元'},'2026-11-14T14:01:00+08:00')
+    assert incoming['510300.SH']['value'] is None
+    assert book.etf_flow['510300.SH']==before
+    rows,units=daily_etf_rows(daily_envelope(value='123'),'2026-11-13')
+    book.add_etf_daily(rows,units,'2026-11-14T14:00:00+08:00')
+    before=dict(book.etf_daily['510300.SH'])
+    rows,units=daily_etf_rows(daily_envelope(value='--'),'2026-11-13')
+    incoming=book.add_etf_daily(rows,units,'2026-11-14T14:01:00+08:00')
+    assert incoming['510300.SH']['value'] is None
+    assert book.etf_daily['510300.SH']==before
 
 
 def test_daily_success_is_cached_once_per_day_and_flow_failure_is_isolated(tmp_path,monkeypatch):

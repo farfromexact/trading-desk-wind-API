@@ -16,3 +16,8 @@ logs/
 *.sqlite3-shm
 reports/*
 !reports/*.md
+
+# Local research artifacts
+/indicators/
+/research/
+/reports/commodity-treasury-realtime-audit-2026-11-14.md
