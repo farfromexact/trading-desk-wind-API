@@ -21,6 +21,13 @@ test('position requires healthy live state and already-known levels',()=>{
   assert.equal(positionMetric({...item,ready:false}).value,'等待行情');
   assert.equal(positionMetric({...item,ready:false,phase:'已收盘'}).value,'已收盘');
   assert.equal(positionMetric({...item,phase:'已收盘'},false).value,'等待行情');
+  for (const phase of ['午休','小节休息']) {
+    const paused=positionMetric({...item,ready:false,phase,status:phase});
+    assert.equal(paused.value,phase);
+    assert.match(paused.subtitle,/实时位置在交易时段展示/);
+    assert.equal(paused.time,item.market_time);
+    assert.equal(positionMetric({...item,ready:false,phase},false).value,'等待行情');
+  }
 });
 test('cross-market rows retain their own dates, no total flow is synthesized',()=>{
   const rows=crossRows({cross:[{code:'AU2612.SHF',time:'2026-11-14T02:30:00+08:00',trading_day:'20261116',change_pct:-.21,amount:1e8},

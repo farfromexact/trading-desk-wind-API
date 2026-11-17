@@ -31,7 +31,7 @@
   .market-context--rail .mc-cross{padding:9px 16px;gap:7px 13px;font-size:10px}.market-context--rail .mc-cross-item{gap:5px}.market-context--rail .mc-cross-note{font-size:9px}.market-context--rail .mc-cross-item small{font-size:8px}
   .market-context--rail .mc-etfs{padding:7px 16px}.market-context--rail .mc-etfs th,.market-context--rail .mc-etfs td{padding:5px 6px}.market-context--rail .mc-etfs th:first-child{padding-left:0;width:22%}
   .market-context--rail .mc-etfs thead th,.market-context--rail .mc-etfs tbody th{font-size:10px}.market-context--rail .mc-etfs th small{font-size:8px;margin-top:2px}.market-context--rail .mc-etfs strong{font-size:17px}.market-context--rail .mc-etf-time{font-size:8px;margin-top:2px}.market-context--rail .mc-etf-status{font-size:8px;margin-top:1px}.market-context--rail .mc-etf-foot{font-size:8px;padding-top:3px}
-  .market-context--rail .mc-etfs strong{display:block}.market-context--rail .mc-etf-time{display:inline-block;margin-right:5px}.market-context--rail .mc-etf-status{display:inline}
+  .market-context--rail .mc-etfs strong{display:block}
   .market-context--rail .mc-details{margin-top:0}.market-context--rail .mc-details summary{padding:8px 16px;font-size:10px}.market-context--rail .mc-definitions{grid-template-columns:1fr}
   .app>.event-panel{margin-top:16px}.app>.option-workbench{margin-top:16px}
 }

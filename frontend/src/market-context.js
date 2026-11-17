@@ -17,9 +17,9 @@ export function positionMetric(item, connected = true, allowHistorical = false) 
   if (!item?.contract || !finite(item?.quote?.rt_last)) return missing;
   const historical = allowHistorical && item.snapshot_mode === 'historical';
   if (!historical && (!connected || !item.ready || item.phase !== '交易中')) {
-    const closed = connected && item.phase === '已收盘';
-    return {...missing, value:closed?'已收盘':'等待行情',
-      subtitle:closed?`${item.contract.split('.')[0]} · 实时位置在交易时段展示`:`${item.contract.split('.')[0]} · ${item.status || '非交易时段'}`,
+    const paused = connected && ['午休','小节休息','已收盘'].includes(item.phase);
+    return {...missing, value:paused?item.phase:'等待行情',
+      subtitle:paused?`${item.contract.split('.')[0]} · 实时位置在交易时段展示`:`${item.contract.split('.')[0]} · ${item.status || '非交易时段'}`,
       time:item.market_time};
   }
   const price = item.quote.rt_last;
