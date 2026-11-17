@@ -4,16 +4,26 @@
 
 ## 跨平台维护与接手
 
-**Windows 和 macOS 共用这个仓库、同一套业务代码。** 两个平台分别安装依赖和官方 Wind SDK，使用各自启动器；不复制 `.venv`、数据库或登录配置。
+**Windows 和 macOS 共用这个仓库和业务主线，分别使用自己的稳定分支。** 两个平台分别安装依赖和官方 Wind SDK，使用各自启动器；不复制 `.venv`、数据库或登录配置。
+
+| 分支 | 用途 | 更新边界 |
+| --- | --- | --- |
+| `main` | 汇集共享功能与修复 | 不作为两台机器自动跟随的运行版本 |
+| `codex/windows-stable` | Windows 日常运行 | 只在 Windows 验证、提交和推进 |
+| `codex/mac-stable` | Mac 日常运行 | 只在 Mac 验证、提交和推进 |
+
+**2026-11-17 起按平台分别发布。** Mac 初始运行代码固定在当天 09:25 拉取的 `796962b`，这是用户确认正常的 Mac 版本；仅补入分支操作文档，不包含后续 Windows 修复。Windows 从已验证的 `a73b5d9` 起步。Windows 新功能不会自动进入 Mac，用户到 Mac 上要求同步后，再由 Mac 检查差异、适配和验证；反方向同样处理。
+
+**旧 Mac 工作区先 `git fetch origin`，不要先 `git pull origin main`。** 首次切换、日常同步和跨平台功能接收见 [平台分支操作说明](docs/PLATFORM_BRANCHES.md)。在 Windows 不推进 Mac 稳定分支，在 Mac 不推进 Windows 稳定分支；本次初始化只允许向 Mac 增加这份共用操作说明，不改运行代码。
 
 | 平台 | 安装/更新依赖 | 启动 | 停止 | 当前验证状态 |
 | --- | --- | --- | --- | --- |
-| Windows | `install.ps1` | `Start Dashboard.cmd` / `start.ps1` | `Stop Dashboard.cmd` / `stop.ps1` | 有原版实测记录；安装器及采集修复待 Windows 复验 |
-| macOS | `install-mac.command` | `Start Dashboard Mac.command` | 启动终端按 Control+C | 11月12日夜盘15分钟：0重连，AG/AU无整组归零；SC期权已到期，日盘/全天待验 |
+| Windows | `install.ps1` | `Start Dashboard.cmd` / `start.ps1` | `Stop Dashboard.cmd` / `stop.ps1` | 11月17日背景快照短时实盘恢复；不代表全天稳定性验收 |
+| macOS | `install-mac.command` | `Start Dashboard Mac.command` | 启动终端按 Control+C | `796962b` 由用户确认正常；本次只调整分支说明，未重新实机验证 |
 
-**Windows 接手本次更新：先读 [跨平台维护说明](docs/CROSS_PLATFORM.md)。** 确保 Mac 的改动已推送后再拉取，停止旧服务、重跑安装器、验证 Wind 连接和测试，再启动。Codex 会从根目录 [AGENTS.md](AGENTS.md) 读取平台约定、交接状态和验证要求。
+**更新前先读 [平台分支操作说明](docs/PLATFORM_BRANCHES.md) 和 [跨平台维护说明](docs/CROSS_PLATFORM.md)。** 先确认本机分支和未提交改动，只拉取本平台的稳定分支；涉及运行代码时，停止旧服务、按改动安装/构建和验证，再启动。Codex 会从根目录 [AGENTS.md](AGENTS.md) 读取平台约定、交接状态和验证要求。
 
-拉取业务代码后通常需要重启；前端修改需要重新构建；依赖变更需要重跑对应安装器。不要建立两个仓库或长期 Windows/Mac 分支。Git 仅同步源码、依赖清单、共用配置和文档，不同步本机行情数据。
+拉取业务代码后通常需要重启；前端修改需要重新构建；依赖变更需要重跑对应安装器。保留一个仓库和共同业务实现，两个稳定分支只隔离发布节奏，不复制成两套业务。Git 仅同步源码、依赖清单、共用配置和文档，不同步本机行情数据。
 
 ## 盘面底色与ETF：统一 WindPy
 

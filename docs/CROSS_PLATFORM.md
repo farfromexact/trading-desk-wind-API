@@ -1,5 +1,7 @@
 # Windows / macOS 同仓库维护
 
+**2026-11-17 更新：共用 `main`，分别运行 `codex/windows-stable` 与 `codex/mac-stable`。** 当前机器只更新本平台稳定分支，不替另一平台发布或修改其专用实现。首次从旧 `main` 切换、接收另一端新功能、基线与验证边界见 [平台分支操作说明](PLATFORM_BRANCHES.md)。本页历史验证记录保留当时日期，不代表另一平台已通过当前版本验收。
+
 ## 文件职责
 
 | 层 | 位置 | 约定 |
@@ -14,17 +16,18 @@
 `.gitattributes` 固定 Shell/Python 等为 LF、PowerShell/CMD 为 CRLF，减少跨系统换行差异。
 本次不进行整个仓库的换行重写；已有工作树可能在后续检出时才按规则规范化。
 
-## Windows 接手本次更新（2026-11-16）
+## Windows 更新本平台稳定分支
 
-同一仓库、同一条`main`主线。先在Windows仓库目录检查工作区；若有未提交修改，先保存或提交，遇到冲突检查双方内容，不使用`reset --hard`覆盖。确认本机Wind已安装并登录。
+先在Windows仓库目录确认当前分支为 `codex/windows-stable` 并检查工作区；若仍在旧 `main`，先按分支操作说明完成首次切换。若有未提交修改，先检查归属并保存或提交，遇到冲突检查双方内容，不使用`reset --hard`覆盖。确认本机Wind已安装并登录。以下是涉及运行代码的更新步骤，只有文档变化不用停服。
 
 在PowerShell中依次执行，每步成功后再继续：
 
 ```powershell
 git status
+git fetch origin
 .\stop.ps1
-git switch main
-git pull --ff-only
+git switch codex/windows-stable
+git pull --ff-only origin codex/windows-stable
 .\install.ps1
 .\.venv\Scripts\python.exe scripts/configure_wind.py --check
 .\.venv\Scripts\python.exe -m pytest -q
@@ -36,7 +39,7 @@ node --test (Get-ChildItem frontend/src/*.test.js).FullName
 
 本次盘面底色及ETF统一复用唯一WindPy worker，不再需要MCP/CLI/API Key。五组上涨广度合并一次WSQ，右侧复用已有分钟线显示近5分钟相对强弱、成交偏向和广度差，不查询个股或板块名单。首次5分钟广度变化需要盘中积累；开启“盘中更新”后每30秒检查。每项指标旁的“?”支持悬停、键盘聚焦和点击固定说明，纯前端交互不增加Wind请求。
 
-Windows期权仍使用原同步快照（每批最多60），Mac期权回调补数只在Darwin启用；新的市场背景WSQ回调快照则是两端共用。5/15分钟正式信号频率及门槛不变。本机226项Python、28项前端测试和构建通过；新增GitHub Actions在Windows/Linux执行相同离线检查，结果以对应PR检查为准。**CI不安装Wind SDK，本轮Windows原生SDK还需实机盘中复验**。
+11月16日版本记录：Windows期权使用原同步快照（每批最多60），Mac期权回调补数只在Darwin启用；当时市场背景WSQ回调快照是两端共用。5/15分钟正式信号频率及门槛不变。当时本机226项Python、28项前端测试和构建通过；GitHub Actions在Windows/Linux执行离线检查，结果以对应PR检查为准。**CI不安装Wind SDK，这些结果不是Windows行情验收**。11月17日Windows背景同步快照修复只在Windows发布，Mac稳定分支保留11月16日版本，详见平台分支说明。
 
 若要独立诊断SDK，保持看板停止后运行`.\.venv\Scripts\python.exe wind_check.py`，完成后再启动看板；不要与采集器并行运行。启动后刷新浏览器，检查当前交易中的期货、适用且未到期的期权、查看1分钟图的补数及重连计数。另检查盘面底色五卡、源时间、盘中5分钟变化及背景查询错误；ETF资金流unit缩放对照仍待核实。完整记录见[五组广度验证](../reports/five-index-context-2026-11-16.md)和[WindPy迁移报告](../reports/market-context-windpy-2026-11-16.md)，11月12日期权记录仍保留。
 
@@ -56,6 +59,15 @@ $env:WIND_PYTHON_DIR='D:\Wind\Wind.NET.Client\WindNET\x64'
 本次共享配置工具的 Windows 路径分支已做离线测试，PowerShell 脚本和 SDK 仍需 Windows 实机运行，不能用 Mac 测试替代。
 
 ## Mac 安装与启动
+
+Mac 日常使用 `codex/mac-stable`；旧工作区首次迁移先看 [平台分支操作说明](PLATFORM_BRANCHES.md)，不要先拉取 `main`。此分支初始运行代码为用户确认正常的 `796962b`，不会因 Windows 推送新功能而自动更新。已有 Mac 稳定分支的日常同步如下；有未提交改动先保存，涉及代码变化时先用 Control+C 停止原服务，每步成功后再继续：
+
+```bash
+git status
+git fetch origin
+git switch codex/mac-stable
+git pull --ff-only origin codex/mac-stable
+```
 
 从 Mac App Store 安装官方 Wind API。保留 `/Applications/Wind API.app` 原始位置：当前官方 Python 模块内部使用该位置加载动态库，移动应用后仅修改 Python 搜索路径未必够用。
 
@@ -80,7 +92,7 @@ $env:WIND_PYTHON_DIR='D:\Wind\Wind.NET.Client\WindNET\x64'
 | Python 依赖或前端锁文件 | 停服后拉取，重跑本机安装器，再验证启动 |
 | Wind 或进程生命周期 | 两个系统分别做真实连接验证；记录未验证项 |
 
-每次开始工作先拉取；完成后检查 diff、测试、提交并推送；换电脑再拉取。并行开发功能时用临时功能分支，合回共同主线，不维护永久 Windows/Mac 两条主线。
+每次开始工作先检查分支和未提交内容，再 fetch；日常只拉取本平台稳定分支。完成后检查 diff、按改动验证，并在用户授权范围内提交、推送。共享功能汇集到 `main`，不自动推进另一端稳定分支。用户换到另一平台并要求接收新功能后，才在目标机器做差异检查和验证；操作步骤见 [平台分支操作说明](PLATFORM_BRANCHES.md)。
 Git 不同步行情库、历史事件、登录状态或服务器进程。需要迁移数据时另行设计备份和导入流程。
 
 ## 已知问题与证据边界

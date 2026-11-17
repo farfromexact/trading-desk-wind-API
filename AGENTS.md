@@ -2,7 +2,7 @@
 
 ## 项目与平台约定
 
-- 这是同一个 Windows/macOS 产品，使用同一个 repo 和共同主线。不要复制业务实现到 Mac 专用目录，不要建立长期平台分支。
+- 这是同一个 Windows/macOS 产品，使用同一个 repo 和共同业务主线 `main`；按用户 2026-11-17 的新决定，Windows 使用 `codex/windows-stable`，Mac 使用 `codex/mac-stable`。两端分别发布，不复制业务实现到平台专用目录。
 - `app/` 和 `frontend/` 是共用业务代码；策略规则、交易日归属、风控静默和期权模型不得因为平台适配而改变。
 - Windows 安装/启动/停止入口：`install.ps1`、`start.ps1`、`stop.ps1` 和现有 CMD 包装。
 - macOS 安装/启动入口：`install-mac.command`、`Start Dashboard Mac.command`；Mac 以前台服务运行，Control+C 停止。
@@ -11,9 +11,18 @@
 - `.venv`、`node_modules`、`frontend/dist`、数据库、缓存、日志各机独立生成；不要从另一操作系统复制过来。
 - `config.json`、`options-config.json` 是共用产品参数，会影响两端；不是放本机安装路径的地方。`.env` 不会自动加载，本项目没有引入 dotenv。
 
+## 平台分支与操作权限（2026-11-17，覆盖旧的两端跟随 main 约定）
+
+- 开始前确认操作系统、`git branch --show-current`、上游分支和 `git status`，并读 `docs/PLATFORM_BRANCHES.md`。日常拉取、提交和推送只针对本平台稳定分支；`main` 汇集共享工作，不代表另一个平台已验收或已发布。
+- Windows 不推进、合并、重置或推送 `codex/mac-stable`；Mac 不推进、合并、重置或推送 `codex/windows-stable`。不要为了猜测另一平台的兼容性而修改其专用启动器、SDK 调用方式或平台路径；跨平台适配由用户在目标机器要求同步后，在目标机器完成。共享业务需求仍只实现一次。
+- 本次分支初始化是明确授权的例外：Mac 分支以 `796962b67a9fa5cd99fdb21691e1e9a78901c23d` 为运行代码基线，只增加分支操作文档；Windows 以 `a73b5d927f37ac802fdc24386bb47d783271ce9f` 为代码基线。前者为用户确认正常的 Mac 版本，不得把后续 Windows 修复打包送入 Mac。初始化不代表本轮重新做过 Mac 实机验证。
+- 新功能在本机临时功能分支或本机稳定分支开发；获提交/推送授权后将共享功能归回 `main`，只发布本机验证过的内容到本机稳定分支。不得自动合并、挑选提交或强推到另一平台稳定分支。
+- 用户只说“同步远端”时，默认更新本平台分支；用户在 Mac 明确要求接收 Windows 新功能时，先在 Mac 临时分支检查、选择提交并验证，再推进 Mac 稳定分支。反方向同理。不要为了两边提交号一致而同步所有差异。
+- 本机未提交文件、构建产物、Wind 配置和行情库必须保留。切换前有改动时先检查归属，不自动丢弃、强制检出或把它们带到另一平台；只改文档无需重启、重建或调用 Wind。
+
 ## 修改前和验证
 
-1. 先读 `README.md` 的跨平台维护段、`docs/CROSS_PLATFORM.md`，检查 `git status` 和已有改动，不覆盖其他机器/用户未提交的修改。
+1. 先读 `README.md` 的跨平台维护段、`docs/PLATFORM_BRANCHES.md`、`docs/CROSS_PLATFORM.md`，检查当前分支、`git status` 和已有改动，不覆盖其他机器/用户未提交的修改。
 2. 改动平台脚本时保留另一平台入口；优先使用 `pathlib` 和平台检测，禁止写死某台电脑的用户名。
 3. Python 依赖使用 `requirements-lock.txt`，前端使用 `frontend/package-lock.json`。依赖变更同步维护清单和锁文件，并说明另一平台尚未执行的验证。
 4. 业务变化运行项目 pytest；前端变化执行现有 Node 测试和构建；安装器变化验证路径解析、错误提示和 shell 语法。不得把模拟的平台路径测试称为真实 Windows 执行。
@@ -61,7 +70,7 @@
 ## 2026-11-16 发布补充
 
 - 指标旁新增前端说明按钮，悬停/聚焦查看，点击固定、Esc/点空白关闭，不新增API请求。
-- `.github/workflows/checks.yml` 对PR和main执行Windows/Linux离线pytest、Node测试与构建；CI不带Wind SDK，不得称为Windows行情实测。Windows更新必须停止旧服务、pull main、运行install.ps1重建前端、再启动；详见docs/CROSS_PLATFORM.md。
+- `.github/workflows/checks.yml` 对PR和main执行Windows/Linux离线pytest、Node测试与构建；CI不带Wind SDK，不得称为Windows行情实测。Windows更新涉及运行代码时，停止旧服务、拉取 `codex/windows-stable`、运行install.ps1重建前端、再启动；2026-11-17 起不再直接跟随 main，详见docs/CROSS_PLATFORM.md。
 
 ## 2026-11-16 刷新间隔调整
 
