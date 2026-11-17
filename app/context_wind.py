@@ -28,9 +28,10 @@ def context_priority(op):
 
 
 class ContextRequests:
-    """One background call at a time; WSQ waits never block the native worker on either OS."""
-    def __init__(self, w, check, results, timeout=10):
+    """One background call at a time, with platform-selected snapshot transport."""
+    def __init__(self, w, check, results, timeout=10, callback_snapshots=True):
         self.w, self.check, self.results, self.timeout = w, check, results, timeout
+        self.callback_snapshots = callback_snapshots
         self.inbox = queue.SimpleQueue()
         self.pending = {}
 
@@ -41,7 +42,7 @@ class ContextRequests:
         if time.monotonic() > cmd['expires']:
             raise ValueError('主行情繁忙，本轮背景查询已让行，请稍后刷新')
         started = time.monotonic()
-        if method != 'wsq':
+        if method != 'wsq' or not self.callback_snapshots:
             return receipt(self.check(getattr(self.w, method)(*cmd['args']), '盘面 WindPy '+method))
         ident = cmd['id']
         result = self.check(self.w.wsq(*cmd['args'], func=lambda r: self.inbox.put((ident, r))), '盘面回调快照')

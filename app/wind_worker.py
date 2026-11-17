@@ -80,7 +80,7 @@ def worker_main(commands, results, quote_results=None):
         return r
 
     snapshots=AsyncOptionSnapshots(w,check,serialize_quotes,results,quote_results)
-    context=ContextRequests(w,check,results)
+    context=ContextRequests(w,check,results,callback_snapshots=platform.system()!='Windows')
     try:
         check(w.start(waitTime=10), '连接')
         results.put({'type': 'connected'})
@@ -139,7 +139,7 @@ def worker_main(commands, results, quote_results=None):
                             continue
                 elif op == 'context':
                     payload=context.start(cmd)
-                    if cmd['method']=='wsq':
+                    if payload is None:
                         continue
                 elif op == 'option_snapshot':
                     if platform.system()=='Darwin':

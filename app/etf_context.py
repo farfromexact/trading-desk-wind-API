@@ -84,7 +84,7 @@ def flow_records(rows, units, received_at, number):
             value=number(row.get('value')) if units.get('mfd_inflow_m')=='元' else None
             result[code]=dict(code=code,value=value,time=None,trading_day=day,data_date=day,
                 observed_at=iso(received_at),field='mfd_inflow_m',unit='元',frequency='daily_snapshot',
-                source='WindPy WSD MFD_INFLOW_M',reason='' if value is not None else 'WindPy资金流暂缺',
+                source='WindPy WSD MFD_INFLOW_M',reason='' if value is not None else 'Wind尚未返回该日资金流数值',
                 published_at=None)
             continue
         code = row.get('Wind代码') or row.get('windcode')

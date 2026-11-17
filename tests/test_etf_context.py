@@ -73,6 +73,19 @@ def test_out_of_order_fund_snapshots_do_not_replace_newer_observations():
     assert book.etf_flow['510300.SH']['value']==1
 
 
+def test_missing_windpy_daily_flow_keeps_requested_date_without_erasing_valid_history():
+    book=ContextBook()
+    row=dict(code='510300.SH',data_date='2026-11-17',value=None,field='mfd_inflow_m',source='WindPy WSD')
+    book.add_etf_flow([row],{'mfd_inflow_m':'元'},'2026-11-17T09:33:00+08:00')
+    missing=book.etf_flow['510300.SH']
+    assert missing['value'] is None and missing['data_date']=='2026-11-17'
+    assert '尚未返回' in missing['reason'] and missing['time'] is None
+    book.add_etf_flow([dict(row,value=0)],{'mfd_inflow_m':'元'},'2026-11-17T09:34:00+08:00')
+    valid=dict(book.etf_flow['510300.SH'])
+    book.add_etf_flow([row],{'mfd_inflow_m':'元'},'2026-11-17T09:35:00+08:00')
+    assert book.etf_flow['510300.SH']==valid
+
+
 def test_partial_invalid_etf_response_retains_last_good_observation_without_refreshing_its_clock():
     book=ContextBook()
     book.add_etf_flow([flow_row('123')],{'当日主力净流入额':'元'},'2026-11-14T14:00:00+08:00')

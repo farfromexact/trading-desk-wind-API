@@ -100,7 +100,7 @@ class ContextBook:
         for code, row in incoming.items():
             old = self.etf_flow.get(code, {})
             if row.get('frequency')=='daily_snapshot':
-                if row['value'] is not None and row['data_date']>=old.get('data_date',''):
+                if (row['value'] is not None or old.get('value') is None) and row['data_date']>=old.get('data_date',''):
                     self.etf_flow[code]=row
                 continue
             if old.get('time') and old.get('value') is not None and (not row['time'] or row['value'] is None):
@@ -297,7 +297,12 @@ class MarketContext:
         self.book.provider='WindPy'
         self.client = client or WindPyContextClient(desk,directory)
         self.disabled = desk.offline or os.environ.get('WIND_DESK_CONTEXT_DISABLED') == '1'
-        self.monitor = False
+        self.settings_path = Path(directory)/'market-context-settings.json'
+        try:
+            settings = json.loads(self.settings_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            settings = {}
+        self.monitor = not self.disabled and isinstance(settings, dict) and settings.get('monitoring') is True
         self.task = None
         self.last_attempt = float('-inf')
         self.last_bars_slot = {}
@@ -311,6 +316,18 @@ class MarketContext:
         self.audit = None
         self.last_flow_attempt = float('-inf')
         self.last_daily_attempt = float('-inf')
+
+    def set_monitor(self, enabled):
+        if self.disabled:
+            raise ValueError('离线或已禁用市场背景查询')
+        try:
+            self.settings_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.settings_path.with_suffix('.tmp')
+            temporary.write_text(json.dumps(dict(monitoring=bool(enabled))), encoding='utf-8')
+            temporary.replace(self.settings_path)
+        except OSError as exc:
+            raise ValueError('盘中更新设置保存失败') from exc
+        self.monitor = bool(enabled)
 
     def snapshot(self):
         return dict(**self.book.view(), busy=bool(self.task and not self.task.done()),

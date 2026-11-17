@@ -40,6 +40,43 @@ def test_complete_callbacks_keep_field_order_and_invalid_values():
     assert not bridge.pending
 
 
+def test_callback_mode_preserves_wait_for_callback_instead_of_registration_data():
+    callbacks=[];cancelled=[];out=queue.Queue()
+    initial=result(['RT_TIME','RT_DATE'],[[93300],[20261117]])
+    w=SimpleNamespace(wsq=lambda *a,func:callbacks.append(func) or initial,cancelRequest=cancelled.append)
+    bridge=ContextRequests(w,lambda r,l:r,out,callback_snapshots=True)
+    bridge.start(dict(id='1',method='wsq',args=['000852.SH','rt_date,rt_time'],expires=time.monotonic()+1))
+    callbacks[0](result(['RT_TIME'],[[93301]]))
+    bridge.poll()
+    assert [p['type'] for p in out.queue]==['request_deferred']
+    assert not cancelled
+    callbacks[0](result(['RT_DATE','RT_TIME'],[[20261117],[93302]]))
+    bridge.poll()
+    packet=list(out.queue)[-1]
+    assert packet['payload']['Data']==[[20261117],[93302]]
+    assert cancelled==[11] and not bridge.pending
+
+
+def test_windows_synchronous_context_snapshot_returns_without_subscription():
+    calls=[];out=queue.Queue()
+    def wsq(*args,**kwargs):
+        calls.append((args,kwargs))
+        return result(['RT_DATE','RT_TIME'],[[20261117],[94300]])
+    bridge=ContextRequests(SimpleNamespace(wsq=wsq),lambda r,l:r,out,callback_snapshots=False)
+    raw=bridge.start(dict(id='1',method='wsq',args=['000852.SH','rt_date,rt_time'],expires=time.monotonic()+1))
+    assert raw['Data']==[[20261117],[94300]]
+    assert calls==[(('000852.SH','rt_date,rt_time'),{})]
+    assert out.empty() and not bridge.pending
+
+
+def test_windows_synchronous_context_errors_do_not_become_successful_snapshots():
+    def check(r,label):raise ValueError('Wind field denied')
+    bridge=ContextRequests(SimpleNamespace(wsq=lambda *args:result([],[],error=-1)),check,queue.Queue(),callback_snapshots=False)
+    with pytest.raises(ValueError,match='field denied'):
+        bridge.start(dict(id='1',method='wsq',args=['000852.SH','rt_date'],expires=time.monotonic()+1))
+    assert not bridge.pending
+
+
 def test_background_priority_and_expired_job_never_calls_sdk():
     assert context_priority('bars')<context_priority('option_snapshot')<context_priority('context')
     assert context_priority('stop')<context_priority('bars')

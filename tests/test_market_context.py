@@ -102,6 +102,27 @@ def test_offline_never_queries_and_refresh_has_single_flight_cooldown(tmp_path):
     asyncio.run(check())
 
 
+def test_monitor_choice_survives_restart_and_offline_cannot_enable_it(tmp_path):
+    desk=SimpleNamespace(offline=False,watch={},calendar=set())
+    service=MarketContext(desk,tmp_path)
+    assert not service.monitor
+    service.set_monitor(True)
+    assert MarketContext(desk,tmp_path).monitor
+    offline=MarketContext(SimpleNamespace(offline=True,watch={},calendar=set()),tmp_path)
+    assert not offline.monitor
+    with pytest.raises(ValueError):offline.set_monitor(True)
+    service.set_monitor(False)
+    assert not MarketContext(desk,tmp_path).monitor
+
+
+def test_failed_settings_write_does_not_change_monitor_choice(tmp_path,monkeypatch):
+    service=MarketContext(SimpleNamespace(offline=False,watch={},calendar=set()),tmp_path)
+    def failed(*args,**kwargs):raise OSError('unwritable')
+    monkeypatch.setattr(type(service.settings_path),'write_text',failed)
+    with pytest.raises(ValueError,match='保存失败'):service.set_monitor(True)
+    assert not service.monitor
+
+
 def test_query_failure_keeps_old_source_time(tmp_path):
     class FailedClient:
         async def call(self,*args):raise ValueError('权限不足')

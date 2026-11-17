@@ -58,6 +58,15 @@ test('WindPy daily flow never fabricates a realtime clock', () => {
   assert.equal(flow.time,null);
 });
 
+test('empty daily flow shows its actual requested date and missing-data reason',()=>{
+  const flow=etfRows({etfs:[{code:'512100.SH',flow:{value:null,data_date:'2026-11-17',time:null,
+    frequency:'daily_snapshot',unit:'元',reason:'Wind尚未返回该日资金流数值'}}]})[0].flow;
+  assert.equal(flow.display,'—');
+  assert.equal(flow.timeLabel,'数据日 2026-11-17');
+  assert.equal(flow.status,'Wind尚未返回该日资金流数值');
+  assert.equal(flow.time,null);
+});
+
 
 test('five breadth cards preserve zero, missing, counts and five-minute changes',()=>{
   const rows=breadthCards({breadths:[{code:'000688.SH',value:0,counts:[0,50,0],change_pp:-10},

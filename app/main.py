@@ -92,7 +92,10 @@ async def context_monitor(body:ContextMonitor,request:Request):
     context=request.app.state.market_context
     if context.disabled:
         raise HTTPException(400,'离线或已禁用市场背景查询')
-    context.monitor=body.enabled
+    try:
+        context.set_monitor(body.enabled)
+    except ValueError as exc:
+        raise HTTPException(400,str(exc)) from exc
     if body.enabled:
         context.request_refresh()
     return context.snapshot()

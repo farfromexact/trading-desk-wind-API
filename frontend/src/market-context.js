@@ -84,7 +84,7 @@ export function etfRows(context, clock = new Date()) {
     return {...sample,
       flow:{...flow, value:flowValid?flow.value:null, display:money(flowValid?flow.value:null),
         timeLabel:datedFlow?`数据日 ${flow.data_date}`:flow.time?contextTime(flow.time):'时间未取得',
-        stage:datedFlow?'日频截面':sourceClock>='15:00:00'?'盘后快照':'盘中累计', status:datedFlow?'源更新时间未提供':sourceStatus(flow.time,clock)},
+        stage:datedFlow?'日频截面':sourceClock>='15:00:00'?'盘后快照':'盘中累计', status:datedFlow?(flowValid?'源更新时间未提供':flow.reason||'Wind尚未返回该日数值'):sourceStatus(flow.time,clock)},
       daily:{...daily, value:dailyValid?daily.value:null, display:money(dailyValid?daily.value:null),
         dateLabel:daily.data_date?`数据日 ${daily.data_date}`:'数据日未取得'},
     };
