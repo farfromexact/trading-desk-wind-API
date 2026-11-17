@@ -40,7 +40,7 @@ test('ETF daily dates and intraday clocks stay separate; missing and zero are di
   const rows=etfRows({etfs:[{code:'512100.SH',flow:{value:-779190837,time:'2026-11-13T15:30:29+08:00',unit:'元',frequency:'intraday_cumulative'},
     daily:{value:0,data_date:'2026-11-12',unit:'元',frequency:'daily'}}]},'2026-11-14T14:00:00+08:00');
   assert.equal(rows[0].flow.display,'-7.79亿');
-  assert.equal(rows[0].flow.stage,'盘后快照');
+  assert.equal(rows[0].flow.stage,'收盘累计快照');
   assert.equal(rows[0].flow.status,'历史');
   assert.equal(rows[0].daily.display,'0.00亿');
   assert.equal(rows[0].daily.dateLabel,'数据日 2026-11-12');
@@ -58,10 +58,10 @@ test('WindPy daily flow never fabricates a realtime clock', () => {
   const rows=etfRows({etfs:[{code:'510300.SH',flow:{value:0,data_date:'2026-11-16',time:null,
     frequency:'daily_snapshot',unit:'元',observed_at:'2026-11-16T20:00:00+08:00'}}]},new Date('2026-11-16T20:01:00+08:00'));
   const flow=rows.find(x=>x.code==='510300.SH').flow;
-  assert.equal(flow.display,'0.00亿');
+  assert.equal(flow.display,'—');
   assert.equal(flow.timeLabel,'数据日 2026-11-16');
-  assert.equal(flow.stage,'日频截面');
-  assert.equal(flow.status,'源更新时间未提供');
+  assert.equal(flow.stage,'旧日频截面（停用）');
+  assert.equal(flow.status,'日频数据不用于日内资金流');
   assert.equal(flow.time,null);
 });
 
@@ -70,8 +70,21 @@ test('empty daily flow shows its actual requested date and missing-data reason',
     frequency:'daily_snapshot',unit:'元',reason:'Wind尚未返回该日资金流数值'}}]})[0].flow;
   assert.equal(flow.display,'—');
   assert.equal(flow.timeLabel,'数据日 2026-11-17');
-  assert.equal(flow.status,'Wind尚未返回该日资金流数值');
+  assert.equal(flow.status,'日频数据不用于日内资金流');
   assert.equal(flow.time,null);
+});
+
+test('intraday flow keeps source time, valid zero and missing component reason',()=>{
+  const base={source:'WindPy WSQ',frequency:'intraday_cumulative',unit:'元',time:'2026-11-17T10:02:00+08:00'};
+  const rows=etfRows({etfs:[{code:'512100.SH',flow:{...base,value:0}},
+    {code:'510300.SH',flow:{...base,value:null,reason:'实时大单字段缺失'}},
+    {code:'510050.SH',flow:{...base,value:-2e8}}]},'2026-11-17T10:03:00+08:00');
+  assert.equal(rows[0].flow.display,'0.00亿');
+  assert.equal(rows[0].flow.stage,'日内累计');
+  assert.equal(rows[0].flow.status,'最近');
+  assert.equal(rows[1].flow.display,'—');
+  assert.equal(rows[1].flow.status,'实时大单字段缺失');
+  assert.equal(rows[2].flow.display,'-2.00亿');
 });
 
 

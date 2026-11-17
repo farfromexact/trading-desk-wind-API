@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from .domain import iso, now, quote_time
-from .etf_context import DAILY_FIELD, DERIVED_DAILY_FIELD, ETF_SAMPLES
+from .etf_context import DAILY_FIELD, DERIVED_DAILY_FIELD, ETF_SAMPLES, ETF_FLOW_COMPONENTS, ETF_FLOW_WSQ_FIELDS
 
 
 def columns(raw):
@@ -66,13 +66,10 @@ class WindPyContextClient:
                     '最新交易日': str(int(r['rt_date'])) if r.get('rt_date') else None,
                     '涨跌幅': r['rt_pct_chg']*100 if r.get('rt_pct_chg') is not None else None, '成交额': r.get('rt_amt'), 'indicator_units': {'成交额': '元'}}))
         elif tool == 'get_fund_price_indicators':
-            # WSD supplies actual dates; never manufacture an intraday source clock for WSS/WSD data.
-            day = max((d for d in self.desk.calendar if d <= now().date().isoformat()), default=None)
-            if not day:
-                raise ValueError('ETF资金流等待交易日历')
-            raw = await self.request('wsd', params['windcode'], 'mfd_inflow_m', day, day, 'unit=1;Fill=Blank')
-            rows = self.daily_rows(raw, 'mfd_inflow_m', day)
-            units = {'mfd_inflow_m': '元'}
+            # One complete WSQ batch; no WSD fallback or independent Wind login.
+            raw = await self.request('wsq', params['windcode'], ETF_FLOW_WSQ_FIELDS, 'unit=1')
+            rows = self.flow_rows(raw, params['windcode'].split(','))
+            units = {field:'元' for field in ETF_FLOW_COMPONENTS}
         elif tool == 'fund_get_listed_historical_price':
             day = max((d for d in self.desk.calendar if d <= params['tradeDate']), default=None)
             if not day:
@@ -89,6 +86,17 @@ class WindPyContextClient:
         else:
             raise ValueError('不支持的 WindPy 背景查询')
         return dict(provider='WindPy', rows=rows, units=units, raw=raw)
+
+    @staticmethod
+    def flow_rows(raw, expected_codes):
+        codes = raw['Codes']
+        fields = [field.lower() for field in raw['Fields']]
+        if (len(codes) != len(set(codes)) or set(codes) != set(expected_codes)
+                or len(fields) != len(set(fields)) or set(fields) != set(ETF_FLOW_WSQ_FIELDS.split(','))
+                or len(raw['Data']) != len(fields)
+                or any(len(col) != len(codes) for col in raw['Data'])):
+            raise ValueError('ETF实时资金流代码、字段或矩阵不完整')
+        return [dict(code=code, source='WindPy WSQ', **row) for code,row in cross_section(raw).items()]
 
     @staticmethod
     def daily_rows(raw, field, requested_day):
@@ -133,16 +141,15 @@ class WindPyContextClient:
             raise ValueError('核验等待两个完整交易日')
         codes=','.join(s['code'] for s in ETF_SAMPLES.values())
         audit=dict(data_date=day,observed_at=iso(now()),checks=[],receipts=[])
-        field='mfd_inflow_m'
-        raw=await self.request('wsd',codes,field,day,day,'unit=1;Fill=Blank')
-        scaled=await self.request('wsd',codes,field,day,day,'unit=10000;Fill=Blank')
-        a={r['code']:r['value'] for r in self.daily_rows(raw,field,day)}
-        b={r['code']:r['value'] for r in self.daily_rows(scaled,field,day)}
-        audit['receipts'].append(dict(field=field,unit1=raw,unit10000=scaled))
-        for code in a:
-            x,y=a[code],b.get(code)
-            ok=x is not None and y is not None and abs(x-y*10000)<=max(.01,abs(x)*1e-8)
-            audit['checks'].append(dict(code=code,field=field,check='unit_scale_10000',passed=ok,value=x))
+        from .etf_context import flow_records
+        from .market_context import number
+        flow=await self.call('get_fund_price_indicators',dict(windcode=codes))
+        records=flow_records(flow['rows'],flow['units'],now(),number)
+        audit['receipts'].append(dict(intraday_flow=flow['raw']))
+        for code, record in records.items():
+            audit['checks'].append(dict(code=code,check='WSQ_intraday_fields_and_clock',
+                passed=record['value'] is not None,record=record))
+        audit['flow_unit_note']='WSQ请求unit=1；字段完整性检查不等于独立单位或终端金额对照通过'
         previous=await self.request('wss',codes,'unit_total,nav','tradeDate='+before.replace('-','')+';unit=1')
         current=await self.request('wss',codes,'unit_total,nav','tradeDate='+day.replace('-','')+';unit=1')
         audit['receipts'].append(dict(previous_wss=previous,current_wss=current))

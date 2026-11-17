@@ -295,6 +295,10 @@ class MarketContext:
             data = None
         self.book = ContextBook(data)
         self.book.provider='WindPy'
+        # The old WSD amount must never appear beneath the new intraday label.
+        self.book.etf_flow = {code:row for code,row in self.book.etf_flow.items()
+                              if row.get('source') == 'WindPy WSQ'
+                              and row.get('frequency') == 'intraday_cumulative'}
         self.client = client or WindPyContextClient(desk,directory)
         self.disabled = desk.offline or os.environ.get('WIND_DESK_CONTEXT_DISABLED') == '1'
         self.settings_path = Path(directory)/'market-context-settings.json'
@@ -489,7 +493,7 @@ class MarketContext:
 
     async def refresh_etfs(self, query):
         codes = [sample['code'] for sample in ETF_SAMPLES.values()]
-        # Breadth may refresh faster; keep daily flow polling at its previous cadence.
+        # One intraday snapshot per minute at most; preserve foreground priority.
         if time.monotonic()-self.last_flow_attempt >= ETF_FLOW_SECONDS:
             self.last_flow_attempt = time.monotonic()
             try:

@@ -78,13 +78,14 @@ export function etfRows(context, clock = new Date()) {
     const row = context?.etfs?.find(x=>x.code===sample.code) || {};
     const flow = row.flow || {}, daily = row.daily || {};
     const datedFlow = flow.frequency==='daily_snapshot' && flow.data_date;
-    const flowValid = finite(flow.value) && flow.unit==='元' && (datedFlow || flow.time && flow.frequency==='intraday_cumulative');
+    const flowValid = finite(flow.value) && flow.unit==='元' && flow.time && flow.frequency==='intraday_cumulative';
     const dailyValid = finite(daily.value) && daily.data_date && daily.unit==='元' && daily.frequency==='daily';
     const sourceClock = flow.time ? new Date(flow.time).toLocaleTimeString('en-GB',{timeZone:'Asia/Shanghai',hour12:false}) : '';
     return {...sample,
       flow:{...flow, value:flowValid?flow.value:null, display:money(flowValid?flow.value:null),
         timeLabel:datedFlow?`数据日 ${flow.data_date}`:flow.time?contextTime(flow.time):'时间未取得',
-        stage:datedFlow?'日频截面':sourceClock>='15:00:00'?'盘后快照':'盘中累计', status:datedFlow?(flowValid?'源更新时间未提供':flow.reason||'Wind尚未返回该日数值'):sourceStatus(flow.time,clock)},
+        stage:datedFlow?'旧日频截面（停用）':sourceClock>='15:00:00'?'收盘累计快照':'日内累计',
+        status:datedFlow?'日频数据不用于日内资金流':flow.reason||sourceStatus(flow.time,clock)},
       daily:{...daily, value:dailyValid?daily.value:null, display:money(dailyValid?daily.value:null),
         dateLabel:daily.data_date?`数据日 ${daily.data_date}`:'数据日未取得'},
     };
