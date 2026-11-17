@@ -29,5 +29,7 @@ jobs:
       - run: npm ci --prefix frontend
       - name: Frontend tests
         shell: bash
-        run: node --test frontend/src/*.test.js
+        run: node --test frontend/src/*.test.js frontend/v2/*.test.js
       - run: npm run build --prefix frontend
+      - name: Build V2 separately
+        run: node frontend/node_modules/vite/bin/vite.js build --config frontend/v2/vite.config.js

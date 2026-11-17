@@ -82,3 +82,10 @@
 - Windows实盘复现临时WSQ回调10秒内不能完整返回，补读注册返回值仍未解决；Windows背景WSQ改为与现有主行情一致的同步快照。按用户要求，提交前撤掉初始返回值处理及回调重构，Mac原有注册、回调处理、取消逻辑保持原样，不合并零散增量。平台选择集中在`wind_worker.py`，仅Windows采用同步快照，仍复用唯一worker、低优先级、单在途、15秒排队让行、2秒慢查询退避及45秒原生保护，不回退MCP或API Key。
 - “盘中更新”开关保存到本机忽略文件`data/market-context-settings.json`，重启恢复上次选择，首次默认按需，离线/禁用始终不采集。ETF当日WSD返回空值时保留查询数据日和缺失原因，不替换有效旧值、不补零。
 - 最终243项Python、29项Node测试及构建通过；Windows五组广度和五个跨市场合约快照已实盘恢复，Mac本轮未实机复验。结果及未完成边界见`reports/context-windows-display-fix-2026-11-17.md`，不把短时观察写成全天验收。
+
+## 2026-11-17 盘面解说 V2
+
+- `frontend/v2`与`scripts/serve_dashboard_v2.py`提供8770独立视图，原8765看板保留。V2只串行GET原后台缓存，不导入Wind或改变后台采集、正式策略、风控与声音。
+- Windows根目录`Start Dashboard V2.cmd`/`Stop Dashboard V2.cmd`对应`start-v2.ps1`/`stop-v2.ps1`。启动自动构建到忽略的`data/dashboard-v2/site`并复用同仓库8765；关闭只停经身份核对的V2进程，不调用原`stop.ps1`。不要将V2构建覆盖到`frontend/dist`。
+- 顶部涨跌幅为实时价相对缓存前一完整日盘收盘，明确标注口径，不能冒充昨结算涨跌幅。缺失不补零，不用历史触价冒充实时确认；连接中断暂停结论。行情15秒门槛与后台就绪检查保留；分钟指标按已完成K线节奏判断。
+- 前端检查包含`frontend/src/*.test.js`与`frontend/v2/*.test.js`及两个独立构建。Windows启停流程须验证重复启动、端口冲突和旧PID保护；过程不得为测试停止原采集器。Mac入口及稳定分支未发布V2，实机验证在目标机器进行。说明与验证见`frontend/v2/README.md`和`reports/dashboard-v2-2026-11-17.md`。
