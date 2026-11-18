@@ -1,5 +1,5 @@
 import React from 'react';
-import {clockSeconds, finite, signed, tone} from '../v2/model.js';
+import {clockSeconds, finite, signed, tone} from './market-model.js';
 import {formatPrice, shortContract} from '../src/market-format.js';
 import './market-cards.css';
 
