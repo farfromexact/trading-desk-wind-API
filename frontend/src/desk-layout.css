@@ -1,4 +1,35 @@
 /* Shared production/preview layout. Wide monitors keep context beside price structure. */
+.app > .topline {
+  display: grid;
+  grid-template-columns: minmax(clamp(204px, 11.5vw, 284px), max-content) minmax(0, 1fr) max-content;
+  column-gap: 18px;
+}
+.desk-brief {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+  padding: 3px 0 3px 12px;
+  border-left: 2px solid #63998f;
+  background: linear-gradient(90deg, #73b6a90e, transparent 70%);
+}
+.brief-label { flex: none; font-size: 11px; font-weight: 600; letter-spacing: .07em; color: #91c0b5; }
+.desk-brief p { margin: 0; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.desk-brief strong { color: #e2e8ec; font-size: 14px; font-weight: 650; }
+.brief-detail { margin-inline-start: .85em; color: #a4b4bd; }
+.desk-brief[data-paused] { border-color: #687580; background: none; }
+.desk-brief[data-paused] :is(.brief-label, strong) { color: #a9b5bf; }
+.desk-clock { white-space: nowrap; }
+@media (max-width: 1000px) {
+  .app > .topline { height: auto; grid-template-columns: 1fr auto; gap: 5px 10px; padding: 6px 0; }
+  .topline > .desk-brief { grid-column: 1 / -1; grid-row: 2; }
+  .desk-clock { grid-column: 2; grid-row: 1; }
+}
+@media (max-width: 600px) {
+  .desk-brief { gap: 7px; padding-left: 8px; }
+  .desk-brief strong { font-size: 13px; }
+  .brief-detail { font-size: 11px; margin-inline-start: .4em; }
+}
 .desk-markets { margin: 3px 0 16px; }
 .desk-market-heading { display: flex; align-items: baseline; gap: 14px; margin: 4px 0 12px; }
 .desk-market-heading h2 { font-size: 14px; }

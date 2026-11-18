@@ -1,23 +1,31 @@
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import {contextMetrics, contextRows, contextTime, crossRows, etfRows, sourceStatus, breadthCards, breadthTrend, rotationMetrics} from './market-context.js';
 import './market-context.css';
 import {MetricHelp} from './metric-help.jsx';
 
-export function MarketContextPanel({instruments=[], connected=true, preview=false, layout='wide'}) {
+export function useMarketContext() {
   const [context,setContext]=useState(null), [error,setError]=useState(''), [pending,setPending]=useState(false);
-  const [clock,setClock]=useState(Date.now());
+  const revision=useRef(0);
   useEffect(()=>{
-    let active=true;
+    let stopped=false, controller, timer;
     async function load(){
+      const started=revision.current;
+      controller=new AbortController();
+      const timeout=setTimeout(()=>controller.abort(),10000);
       try {
-        const result=await fetch('/api/market-context');
+        const result=await fetch('/api/market-context',{signal:controller.signal});
         if(!result.ok)throw new Error('市场背景服务尚未就绪');
         const data=await result.json();
-        if(active){setContext(data);setError('');setClock(Date.now());}
-      } catch(e) {if(active)setError(e.message);}
+        if(!stopped && started===revision.current){setContext(data);setError('');}
+      } catch(e) {
+        if(!stopped && started===revision.current)setError(controller.signal.aborted?'市场背景读取超时':e.message);
+      } finally {
+        clearTimeout(timeout);
+        if(!stopped)timer=setTimeout(load,3000);
+      }
     }
-    load();const timer=setInterval(load,3000);
-    return()=>{active=false;clearInterval(timer);};
+    load();
+    return()=>{stopped=true;controller.abort();clearTimeout(timer);};
   },[]);
   async function action(path,body){
     setPending(true);setError('');
@@ -25,9 +33,14 @@ export function MarketContextPanel({instruments=[], connected=true, preview=fals
       const result=await fetch('/api/market-context/'+path,{method:'POST',headers:{'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
       const data=await result.json();
       if(!result.ok)throw new Error(data.detail||'查询失败');
-      setContext(data);
-    }catch(e){setError(e.message);}finally{setPending(false);}
+      setContext(data);setError('');
+    }catch(e){setError(e.message);}finally{revision.current++;setPending(false);}
   }
+  return {context,error,pending,action};
+}
+
+export function MarketContextPanel({source,clock,instruments=[], connected=true, preview=false, layout='wide'}) {
+  const {context,error,pending,action}=source;
   const metrics=contextMetrics(context), rows=contextRows(context,instruments,connected,preview), cross=crossRows(context);
   const etfs=etfRows(context,clock), breadth=breadthCards(context), rotation=rotationMetrics(context);
   const allMetrics=[...breadth,...rotation,...rows.flatMap(row=>[row.activity,row.position])];

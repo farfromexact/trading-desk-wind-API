@@ -24,11 +24,4 @@ export function startLiveFeed({onSnapshot, onConnection, fetcher=fetch, interval
   return ()=>{closed=true;cancel(timer);controller?.abort();};
 }
 
-export function feedHealth(snapshot, connection, now=Date.now()) {
-  if(!connection.connected)return {connected:false,label:connection.error||'正在连接后台'};
-  const age=(now-Date.parse(snapshot?.state?.server_time))/1000;
-  if(!Number.isFinite(age)||age>15||age < -10)return {connected:false,label:'后台状态未及时更新，结论暂停'};
-  if(snapshot.state.offline||snapshot.state.last_error||!snapshot.state.feed_state?.includes('已连接'))
-    return {connected:false,label:'Wind 数据源异常，结论暂停'};
-  return {connected:true,label:'实时缓存已连接'};
-}
+export {feedHealth} from '../shared/market-model.js';

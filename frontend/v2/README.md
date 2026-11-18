@@ -28,7 +28,7 @@ node frontend/node_modules/vite/bin/vite.js build --config frontend/v2/vite.conf
 
 ## 数据与文件
 
-- 原版与 V2 共用 `frontend/shared/market-cards.jsx` 及 `frontend/v2/model.js` 的涨跌幅计算。顶部按股指、贵金属、原油、国债分组，卡片同时显示相对前收盘的涨跌幅、五分钟走势、十五分钟结构与合约现价。
+- 原版与 V2 共用 `frontend/shared/market-cards.jsx` 及 `frontend/shared/market-model.js` 的涨跌幅计算。顶部按股指、贵金属、原油、国债分组，卡片同时显示相对前收盘的涨跌幅、五分钟走势、十五分钟结构与合约现价。
 - 原版从自己的 8765 读取卡片数据，选中的五分钟图复用已有请求，其余品种串行读取已完成的五分钟线缓存。卡片不登记一分钟图关注、不发起 Wind 查询。V2 的数据入口仍是 8770。
 - `scripts/serve_dashboard_v2.py`：只串行GET8765的`state`、`market-context`、`bars`和`events`，不导入Wind、不POST、不增加采集或图表关注租期。
 - `/v2-api/health`：仅返回V2身份、仓库路径和进程号，供启动/关闭核对，不读取行情后台。仅本机可访问。

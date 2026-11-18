@@ -126,7 +126,7 @@ function App() {
   if(!rawSnapshot)return <main className="loading"><span className="brand-mark">W/</span><h1>{connection.error||'正在连接实时后台…'}</h1><p>盘面解说 V2 · 自动重试 · 原看板保持运行</p></main>;
   const snapshot={...rawSnapshot,view_time:new Date(now).toISOString()};
   const health=feedHealth(snapshot,connection,now),paused=disconnect||!health.connected;
-  const items=contracts(snapshot).map(i=>paused?{...i,quoteUsable:false}:i),summary=headline(snapshot,paused),active=items.find(i=>i.root===selected)||items[0];
+  const items=contracts(snapshot).map(i=>paused?{...i,quoteUsable:false}:i),summary=headline(snapshot,paused,items),active=items.find(i=>i.root===selected)||items[0];
   const exceptions=items.filter(i=>!i.usable);
   const quoteCount=items.filter(i=>i.quoteUsable).length;
   if(!active)return <main className="loading"><h1>等待后台加载监测合约…</h1><p>{health.label}</p></main>;
