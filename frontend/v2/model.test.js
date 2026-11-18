@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {normalizedMove,percentile,styleEvidence,sourceQuality,headline,radarItems,recentEvents,contracts,etfQuality} from './model.js';
+import {normalizedMove,percentile,styleEvidence,sourceQuality,headline,radarItems,recentEvents,contracts,etfQuality,etfFlowReading} from './model.js';
 
 const at='2026-11-17T10:30:00+08:00';
 const row=value=>({value,time:at});
@@ -52,6 +52,22 @@ test('ETF old-day flows and failed context reads never appear current',()=>{
   assert.equal(etfQuality(flow,snap),'快照内有效');
   assert.equal(etfQuality({...flow,time:'2026-11-16T10:30:00+08:00'},snap),'历史数据');
   snap.context.error='timeout';assert.equal(etfQuality(flow,snap),'资金流更新异常');
+});
+test('Mac daily ETF snapshots keep their own date and a zero amount, while intraday flows use the source clock', () => {
+  const snapshot = {state: {server_time: at, instruments: []}, context: {}};
+  const daily = {frequency: 'daily_snapshot', data_date: '2026-11-16', value: 0, unit: '元'};
+  const observed = etfFlowReading(daily, snapshot);
+  assert.equal(observed.value, 0);
+  assert.equal(observed.caption, '日频 · 2026-11-16');
+  for (const invalid of [{unit: '万元'}, {value: null}, {data_date: '2026-11-18'}, {data_date: '2026-02-31'}]) {
+    assert.equal(etfFlowReading({...daily, ...invalid}, snapshot).value, null);
+  }
+  const live = {frequency: 'intraday_cumulative', time: at, unit: '元', value: 8};
+  assert.equal(etfFlowReading(live, snapshot).caption, '日内 · 10:30');
+  assert.equal(etfFlowReading({...live, time: null}, snapshot).value, null);
+  snapshot.context.etf_errors = {flow: '查询失败'};
+  assert.equal(etfFlowReading(daily, snapshot).value, null);
+  assert.equal(etfFlowReading(live, snapshot).value, null);
 });
 test('headline evidence excludes stale breadth and a failed context read',()=>{
   const snap={mode:'live',state:{server_time:at,feed_state:'Wind 已连接',instruments:[]},bars:{},context:{

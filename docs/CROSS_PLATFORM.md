@@ -99,7 +99,9 @@ Git 不同步行情库、历史事件、登录状态或服务器进程。需要�
 
 Windows新增根目录`Start Dashboard V2.cmd`和`Stop Dashboard V2.cmd`，对应`start-v2.ps1`/`stop-v2.ps1`。V2运行在8770，复用8765的唯一Wind采集器；启动时自动构建`frontend/v2`到忽略的`data/dashboard-v2/site`，需要时调用原后台启动器。关闭V2仅停止经仓库路径与进程身份核对的展示进程，不停止8765。原入口及`frontend/dist`保留。
 
-只更新V2时，关闭V2、拉取本平台稳定分支、再启动V2即可；若同次更新还包含共享后台变化，则按上面的完整后台更新流程。无需新增依赖。Mac专用入口没有改动，V2尚未在Mac实机验证，不自动推进Mac稳定分支。详见[V2使用说明](../frontend/v2/README.md)。
+Windows 仅更新 V2 时，先关闭 8770，拉取 `codex/windows-stable` 后再启动 V2。若同时更新了 8765 后台，请按上面的完整后台更新流程操作。
+
+11 月 18 日的 Mac 试用分支为 `codex/mac-sync-v2`。试用工作目录里的 `Start Dashboard V2 Mac.command` 读取已有 8765 后台，在 8770 提供页面。盘前缓存与晚间 Wind 登录异常提示已在 Mac 核对，盘中连续行情待验。使用步骤和验收范围见 [V2 使用说明](../frontend/v2/README.md)。
 
 ## 已知问题与证据边界
 

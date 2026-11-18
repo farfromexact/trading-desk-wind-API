@@ -1,23 +1,39 @@
 """Wind Desk V2: local read-only presentation server sharing the 8765 cache."""
 import argparse
 import copy
+import errno
 import json
 import os
+import shutil
+import subprocess
 import threading
 import time
+import webbrowser
 from functools import partial
+from http.client import HTTPConnection, HTTPException
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
-from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 SITE = ROOT / 'data' / 'dashboard-v2' / 'site'
 
 
-def read_cache(path):
-    with urlopen('http://127.0.0.1:8765' + path, timeout=10 if path == '/api/state' else 2) as response:
+def read_local_json(port, path, timeout):
+    # Connect directly to loopback, including on Macs with a system HTTP proxy.
+    connection = HTTPConnection('127.0.0.1', port, timeout=timeout)
+    try:
+        connection.request('GET', path)
+        response = connection.getresponse()
+        if response.status != 200:
+            raise ValueError(f'HTTP {response.status} for {path}')
         return json.load(response)
+    finally:
+        connection.close()
+
+
+def read_cache(path):
+    return read_local_json(8765, path, 10 if path == '/api/state' else 2)
 
 
 class LiveCache:
@@ -173,17 +189,42 @@ class Handler(SimpleHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', type=int, default=8770)
+    parser.add_argument('--build', action='store_true', help='Build the V2 frontend before serving')
+    parser.add_argument('--open-browser', action='store_true', help='Open V2 in the default browser')
     args = parser.parse_args()
-    if not (SITE / 'index.html').is_file():
-        parser.error('Build frontend/v2 first, or use Start Dashboard V2.cmd')
-    server = ThreadingHTTPServer(('127.0.0.1', args.port), partial(Handler, cache=LiveCache()))
-    print(f'Wind Desk V2: http://127.0.0.1:{args.port}/ (read-only 8765 cache)', flush=True)
+    address = f'http://127.0.0.1:{args.port}/'
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
+        server = ThreadingHTTPServer(('127.0.0.1', args.port), partial(Handler, cache=LiveCache()))
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise
+        try:
+            info = read_local_json(args.port, '/v2-api/health', 2)
+        except (OSError, HTTPException, ValueError):
+            info = None
+        if not isinstance(info, dict) or (info.get('service'), info.get('version'), info.get('root')) != ('wind-desk-v2', 2, str(ROOT)):
+            parser.exit(1, f'端口 {args.port} 已占用，请检查该端口上的服务。\n')
+        print(f'V2 已在运行 {address}', flush=True)
+        if args.open_browser:
+            webbrowser.open(address)
+        return
+    # Claim the port before building so a second launch cannot overwrite a running site.
+    with server:
+        if args.build:
+            node = shutil.which('node')
+            vite = ROOT / 'frontend/node_modules/vite/bin/vite.js'
+            if not node or not vite.is_file():
+                parser.exit(1, '构建 V2 需要 Node.js，请在此工作目录运行 npm ci --prefix frontend。\n')
+            subprocess.run([node, str(vite), 'build', '--config', 'frontend/v2/vite.config.js'], cwd=ROOT, check=True)
+        if not (SITE / 'index.html').is_file():
+            parser.error('请先构建 frontend/v2，或使用 --build 启动')
+        print(f'盘面解说 V2 {address}   共享行情来自 8765。按 Control+C 关闭 V2。', flush=True)
+        if args.open_browser:
+            webbrowser.open(address)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
 
 
 if __name__ == '__main__':

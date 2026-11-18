@@ -188,3 +188,25 @@ export function etfQuality(flow, snapshot) {
   if(snapshot.context.error||snapshot.context.etf_errors?.flow)return '资金流更新异常';
   return sourceQuality(flow.time,viewTime(snapshot),equityPhase(snapshot));
 }
+
+export function etfFlowReading(flow, snapshot) {
+  if (flow?.frequency === 'daily_snapshot') {
+    const day = flow.data_date;
+    const dated = typeof day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(day)
+      && date(day + 'T12:00:00+08:00') === day && day <= date(viewTime(snapshot));
+    const error = snapshot.context.error || snapshot.context.etf_errors?.flow || flow.reason;
+    const valid = dated && flow.unit === '元' && finite(flow.value) && !error;
+    return {
+      value: valid ? flow.value : null,
+      caption: dated ? `日频 · ${day}` : '日频日期缺失或异常',
+      detail: error || 'WindPy 日频截面，源更新时间未提供，金额单位缩放待核验。',
+    };
+  }
+  const quality = etfQuality(flow, snapshot);
+  const valid = sourceUsable(quality);
+  return {
+    value: valid ? flow.value : null,
+    caption: valid ? `日内 · ${clock(flow.time)}` : quality,
+    detail: [flow?.time, quality, flow?.reason].filter(Boolean).join(' · '),
+  };
+}

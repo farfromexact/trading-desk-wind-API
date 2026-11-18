@@ -24,7 +24,15 @@ node frontend/node_modules/vite/bin/vite.js build --config frontend/v2/vite.conf
 .\.venv\Scripts\python.exe -X utf8 scripts/serve_dashboard_v2.py
 ```
 
-前台展示服务用Control+C停止。没有新增开机自启。原有Mac入口未修改，本轮未在Mac实机验证或发布。
+前台展示服务用Control+C停止。
+
+## macOS 试用
+
+Mac 试用分支是 `codex/mac-sync-v2`。先用原桌面入口启动 8765。在试用工作目录首次运行 `npm ci --prefix frontend` 安装锁定的依赖，再双击 [Start Dashboard V2 Mac.command](../../Start%20Dashboard%20V2%20Mac.command) 构建并打开 V2。脚本使用 Python 3 标准库。终端也可以运行 `./'Start Dashboard V2 Mac.command' --no-browser`。
+
+重复启动会复用本目录的 8770 服务。关闭 V2 时，在其终端按 Control+C，8765 的行情采集继续运行。
+
+ETF 资金流按缓存的实际频率显示。日内累计使用源时钟判断时效，WindPy WSD 日频截面显示数据日期。日频金额单位缩放仍待核验。
 
 ## 数据与文件
 
@@ -52,3 +60,5 @@ node frontend/node_modules/vite/bin/vite.js build --config frontend/v2/vite.conf
 ## 验证
 
 运行 `python -m pytest -q`、`node --test frontend/src/*.test.js frontend/v2/*.test.js`，以及两个前端构建。CI覆盖Windows/Linux离线检查，不代表Wind实盘验收。详细记录见[本次报告](../../reports/dashboard-v2-2026-11-17.md)。
+
+2026-11-18 在 Mac 试用分支完成两次核对。盘前连续 8 次读取共享缓存，8 个报价与 8765 一致，浏览器合约切换和断线提示恢复正常。20:22 收盘期间复核时，8 组五分钟线和 5 组广度可读。共享后台同时报告分钟线 `-103 (Not logged in)`，浏览器灰显历史行情并暂停结论。盘中连续更新仍待核验。
