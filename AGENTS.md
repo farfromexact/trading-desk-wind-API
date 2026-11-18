@@ -5,7 +5,7 @@
 - 这是同一个 Windows/macOS 产品，使用同一个 repo 和共同业务主线 `main`；按用户 2026-11-17 的新决定，Windows 使用 `codex/windows-stable`，Mac 使用 `codex/mac-stable`。两端分别发布，不复制业务实现到平台专用目录。
 - `app/` 和 `frontend/` 是共用业务代码；策略规则、交易日归属、风控静默和期权模型不得因为平台适配而改变。
 - Windows 安装/启动/停止入口：`install.ps1`、`start.ps1`、`stop.ps1` 和现有 CMD 包装。
-- macOS 安装/启动入口：`install-mac.command`、`Start Dashboard Mac.command`；Mac 以前台服务运行，Control+C 停止。
+- macOS 用 `install-mac.command` 安装，`Start Dashboard Mac.command` 同开 8765 原版与 8770 V2，`Stop Dashboard Mac.command` 停止两项服务。前台 Control+C 仅停止本窗口启动的进程。V2 复用唯一的 WindPy 行情后台。
 - 两端安装器共用 `scripts/configure_wind.py`。SDK 目录优先级：显式参数/环境变量 `WIND_PYTHON_DIR` → 已有有效 `.pth` → 系统默认路径。只写当前 repo 的 `.venv`，不修改系统 Python。
 - Wind SDK 来自官方客户端，不从 PyPI 安装同名包，不把 SDK、账号、许可证、密码或本机路径配置提交到仓库。
 - `.venv`、`node_modules`、`frontend/dist`、数据库、缓存、日志各机独立生成；不要从另一操作系统复制过来。

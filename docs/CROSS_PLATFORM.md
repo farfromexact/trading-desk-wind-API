@@ -79,7 +79,8 @@ git pull --ff-only origin codex/mac-stable
 ```
 
 默认使用 `python3.12`，必要时用 `PYTHON_BIN=/完整路径/python3.12 ./install-mac.command` 指定。
-访问 `http://127.0.0.1:8765`，终端 Control+C 停止。不要与已有8765服务同时启动。
+Mac 稳定版默认打开两个页面，原版位于 `http://127.0.0.1:8765/`，V2 位于 `http://127.0.0.1:8770/`。重复启动复用已有进程，缺少哪个服务就启动哪个。V2 只读 8765 的行情缓存。
+终端 Control+C 关闭该窗口启动的服务。双击 `Stop Dashboard Mac.command` 一起关闭两项服务，用 `./'Stop Dashboard Mac.command' --check` 可以只检查进程归属。
 首次 API 调用可能出现独立 Wind 登录窗口，保存凭据/自动登录由用户自行决定。
 
 ## 每次拉取后做什么
