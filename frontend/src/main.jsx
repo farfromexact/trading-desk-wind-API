@@ -8,6 +8,9 @@ import { mergeChartBars, followLatestRange, structureMarkers, spaceMarkerLabels 
 import { contractRoot, shortContract, formatPrice, formatNumber, currentOpportunity } from './market-format';
 import {OptionsEnvironment,OptionsWorkbench,OptionsDetails} from './options';
 import {MarketContextPanel} from './market-context.jsx';
+import {MarketCardGrid} from '../shared/market-cards.jsx';
+import {contracts as marketContracts} from '../v2/model.js';
+import {useCardBars} from './use-card-bars.js';
 import './desk-layout.css';
 const time = x => x ? new Date(x).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}) : '—';
 const fullTime = x => x ? new Date(x).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}) : '—';
@@ -198,6 +201,9 @@ export function App({preview=false}){
 
   const item=state?.instruments.find(x=>x.root===root);
   const contract=item?.contract||root;
+  const {bars: cardBars, remember: rememberCardBars} = useCardBars(state?.instruments, tf === 5 ? item?.contract : null, preview, api);
+  const cardItems = state ? marketContracts({state, context: {}, bars: cardBars, mode: preview ? 'preview' : 'live',
+    view_time: preview ? state.server_time : new Date().toISOString()}) : [];
   const price=x=>formatPrice(x,item?.market);
   const number=x=>formatNumber(x,item?.market);
   const currentOp=item?.opportunities.find(x=>x.id===selectedOp)||null;
@@ -214,9 +220,13 @@ export function App({preview=false}){
   useEffect(()=>{
     let alive=true;
     if(!item?.contract)return;
-    api('bars?contract='+encodeURIComponent(contract)+'&timeframe='+tf).then(rows=>alive&&setBars(rows)).catch(e=>alive&&setNotice(e.message));
+    api('bars?contract='+encodeURIComponent(contract)+'&timeframe='+tf).then(rows=>{
+      if (!alive) return;
+      setBars(rows);
+      if (tf === 5) rememberCardBars(item, rows);
+    }).catch(e=>alive&&setNotice(e.message));
     return()=>{alive=false;};
-  },[contract,tf,item?.last_bar,state?.metrics.bar_batches,state?.bootstrap_remaining]);
+  },[contract,tf,item?.trading_day,item?.last_bar,state?.metrics.bar_batches,state?.bootstrap_remaining,rememberCardBars]);
   useEffect(()=>{setBars([]);},[contract,tf]);
   const rank={confirmed:0,triggered:1,watching:2,filtered:3,uncertain:4,invalidated:5,expired:6};
   const ops=(state?.instruments.flatMap(x=>x.opportunities)||[]).filter(o=>(!preview||o.trading_day===state.preview_day)&&(history||currentOpportunity(o,state?.instruments.find(x=>x.contract===o.contract))&&['watching','confirmed','triggered','filtered'].includes(o.status))).sort((a,b)=>(rank[a.status]-rank[b.status])||b.signal_bar.localeCompare(a.signal_bar)).slice(0,history?30:8);
@@ -237,7 +247,12 @@ export function App({preview=false}){
       <span className="atmosphere-detail">{atmospherePreview?'仅预览视觉效果，不代表出现真实机会':atmosphereTone==='action'?`${atmosphereRoots} · ${atmosphere.actionable.filter(x=>x.status==='confirmed').length} 个待触发 / ${atmosphere.actionable.filter(x=>x.status==='triggered').length} 个已触价`:`${atmosphereRoots} · ${atmosphere.watching.length} 个关注机会`}</span>
       {atmospherePreview&&<button onClick={()=>setAtmospherePreview(null)}>恢复实时</button>}
     </div>}
-    <div className="radar-grid">{(state?.instruments||[]).map(x=><button key={x.root} aria-label={'选择'+x.market.name+' '+x.root} className={'radar '+(root===x.root?'active ':'')+(atmosphere.actionable.some(o=>o.root===x.root)?'signal-action':atmosphere.watching.some(o=>o.root===x.root)?'signal-watch':'')} onClick={()=>{setRoot(x.root);setSelectedOp(null);setEdit(false);}}><div className="radar-top"><span><b>{x.root}</b>{atmosphere.actionable.some(o=>o.root===x.root)?<em className="signal-label">● 收盘已确认</em>:atmosphere.watching.some(o=>o.root===x.root)?<em className="signal-label">◉ 关注中</em>:null}<small>{x.market.name}</small></span><span className={'badge '+(x.ready?'live':'neutral')} title={x.status}>{x.status}</span></div><div className="radar-mid"><strong>{formatPrice(x.quote.rt_last,x.market)}</strong><span className={'regime '+x.regime.state}>{x.regime.label}</span></div><div className="radar-bottom"><span>{x.contract||(preview?'样本未载入':'解析合约中')}</span><span>行情 {time(x.market_time)}</span></div><div className="radar-note" title={x.note}>{x.note}</div></button>)}</div>
+    {cardItems.length > 0 && <section className="desk-markets" aria-labelledby="desk-market-heading">
+      <div className="desk-market-heading"><h2 id="desk-market-heading">先看哪里在动</h2><span>较前收盘 · 5分钟走势</span></div>
+      <MarketCardGrid items={cardItems} selected={root} showStatus atmosphere={atmosphere}
+        paused={!preview && (!connected || Boolean(state.offline || state.last_error))}
+        onSelect={next => { setRoot(next); setSelectedOp(null); setEdit(false); }}/>
+    </section>}
     <OptionsEnvironment root={root} context={state?.options?.contexts?.[root]} onOpen={()=>setOptionsOpen(true)}/>
     <main className="desk-workspace"><section className="chart-panel panel"><div className="panel-head"><div className="chart-title"><h2>{shortContract(contract)} <span>价格结构</span></h2><button disabled={preview} className="text-button" onClick={()=>{setChoice(item?.contract||'');setEdit(!edit);}}>切换合约 ↗</button></div><div className="segments">{[1,5,15].map(n=><button key={n} disabled={preview&&n===1} title={preview&&n===1?'样本未载入1分钟线':undefined} className={tf===n?'active':''} onClick={()=>setTf(n)}>{n}分钟</button>)}</div></div>
       {edit&&<form className="contract-form" onSubmit={e=>{e.preventDefault();saveChoice();}}><label>真实月份合约<input value={choice} onChange={e=>setChoice(e.target.value.toUpperCase())} placeholder={root+'2612.'+(item?.market.exchange||'CFE')} aria-label="真实月份合约"/></label><button disabled={busy} type="submit">应用</button><button disabled={busy} type="button" onClick={()=>saveChoice(true)}>恢复每日主力</button><button type="button" onClick={()=>setEdit(false)}>取消</button></form>}
