@@ -63,9 +63,9 @@ V2 从原看板的行情缓存展示规则摘要、分组行情卡、风格证�
 - 双击 **[Stop Dashboard V2.cmd](Stop%20Dashboard%20V2.cmd)** 只关闭V2展示服务，原看板与共享采集继续运行。要停止行情采集，使用原来的 **Stop Dashboard.cmd**。
 - 原 **Start Dashboard.cmd**、**Stop Dashboard.cmd** 和 **http://127.0.0.1:8765/** 保留。V2更新后关闭再启动即可重建，构建产物在忽略的`data/dashboard-v2/`，不覆盖原`frontend/dist/`。
 
-**macOS 试用**（`codex/mac-sync-v2`）
+**macOS 稳定版**
 
-先打开原看板，首次在 V2 工作目录运行 `npm ci --prefix frontend`，然后双击 [Start Dashboard V2 Mac.command](Start%20Dashboard%20V2%20Mac.command)。按 Control+C 可以只关闭 8770 的展示服务。
+在 `codex/mac-stable` 双击 `Start Dashboard Mac.command` 打开 8765。行情卡和解说已整合进原版，旧 V2 快捷入口也转到这一页。
 
 顶部8张卡统一显示现价相对前一完整日盘收盘的变化，标注“较前收盘”，可能与期货昨结算口径不同。数据缺失不补零；过期或断线暂停结论，恢复后自动更新。V2只读已有数据，不新增正式信号或声音提醒。历史分位、全A同刻成交额及涨跌停家数仍未接入。
 
