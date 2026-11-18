@@ -2,7 +2,7 @@
 
 本机 Wind 行情驱动的中文交易看板：15分钟识别环境、5分钟确认机会、实时价格预警。包含顺势突破回踩和区间假突破反转，输出参考触发价、结构失效价、目标与价格空间盈亏比。
 
-Mac 稳定版包含原版和[盘面解说 V2](frontend/v2/README.md)。双击 [Start Dashboard Mac.command](Start%20Dashboard%20Mac.command)，默认浏览器会打开原版（8765）和 V2（8770）。两个页面共用一个 WindPy 行情后台。
+双击 [Start Dashboard Mac.command](Start%20Dashboard%20Mac.command) 打开 8765 整合看板。盘中解说位于 Wind 连接状态右侧，下面是八张分组行情卡。解说直接读取本页已有的行情、盘面底色与五分钟线缓存。Windows 接收同款面板见[平台分支说明](docs/PLATFORM_BRANCHES.md#windows-接收-11-月-18-日的整合面板)。
 
 ## 跨平台维护与接手
 
@@ -21,7 +21,7 @@ Mac 稳定版包含原版和[盘面解说 V2](frontend/v2/README.md)。双击 [S
 | 平台 | 安装/更新依赖 | 启动 | 停止 | 当前验证状态 |
 | --- | --- | --- | --- | --- |
 | Windows | `install.ps1` | `Start Dashboard.cmd` / `start.ps1` | `Stop Dashboard.cmd` / `stop.ps1` | 11月17日背景快照短时实盘恢复；不代表全天稳定性验收 |
-| macOS | `install-mac.command` | `Start Dashboard Mac.command` 同开两页 | `Stop Dashboard Mac.command` | 11 月 18 日起，稳定分支包含 V2 |
+| macOS | `install-mac.command` | `Start Dashboard Mac.command` 打开整合看板 | `Stop Dashboard Mac.command` | 盘中解说与行情卡都在 8765 |
 
 **更新前先读 [平台分支操作说明](docs/PLATFORM_BRANCHES.md) 和 [跨平台维护说明](docs/CROSS_PLATFORM.md)。** 先确认本机分支和未提交改动，只拉取本平台的稳定分支；涉及运行代码时，停止旧服务、按改动安装/构建和验证，再启动。Codex 会从根目录 [AGENTS.md](AGENTS.md) 读取平台约定、交接状态和验证要求。
 
@@ -219,7 +219,7 @@ SDK 目录优先使用 `--wind-python-dir` 参数或 `WIND_PYTHON_DIR` 环境变
 若每次新进程都要求登录，可自行在官方登录框选择自动登录；现有服务连接超过25秒会重启行情进程，
 因此首次人工认证建议先通过上述独立检查完成。若看板仍持续显示“正在连接 Wind”，需检查它新弹出的登录框。
 
-双击 **Start Dashboard Mac.command** 同时打开原版与 V2。已有服务会被复用。保持启动终端打开，在该窗口按 Control+C 会关闭它启动的服务。双击 **Stop Dashboard Mac.command** 可同时停止本仓库的两项服务。
+双击 **Start Dashboard Mac.command** 打开整合看板。重复双击会复用已有服务。保持首次启动的终端打开，在该窗口按 Control+C 可停止它启动的服务。双击 **Stop Dashboard Mac.command** 可关闭本仓库的看板。
 在受限执行环境中，原生 SDK 需要访问用户目录（例如 `~/.Wind`）和网络；
 若加载成功后原生进程退出，应在普通终端运行连接检查以区分权限限制与 SDK 问题。
 

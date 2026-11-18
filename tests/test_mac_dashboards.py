@@ -7,36 +7,39 @@ pytest.importorskip('fcntl', reason='macOS foreground launcher uses POSIX file l
 from scripts import mac_dashboards as desk
 
 
-@pytest.mark.parametrize('running', [(), (8765,), (8770,), (8765, 8770)])
-def test_start_opens_both_pages_and_only_starts_missing_services(monkeypatch, tmp_path, running):
+@pytest.mark.parametrize('running', [False, True])
+def test_start_only_opens_the_integrated_page(monkeypatch, tmp_path, running):
     monkeypatch.setattr(desk, 'ROOT', tmp_path)
-    start = Mock(side_effect=lambda port: Mock(pid=port, wait=Mock(return_value=0)))
-    open_pages = Mock(return_value=Mock(returncode=0))
-    cleanup = Mock()
-    monkeypatch.setattr(desk, 'listener', lambda port: port if port in running else None)
-    monkeypatch.setattr(desk, 'start_process', start)
-    monkeypatch.setattr(desk, 'wait_ready', Mock())
-    monkeypatch.setattr(desk.subprocess, 'run', open_pages)
-    monkeypatch.setattr(desk, 'close_owned', cleanup)
+    child = Mock(wait=Mock(return_value=0), poll=Mock(return_value=0))
+    launch = Mock(return_value=child)
+    identify = Mock(return_value=object() if running else None)
+    open_page = Mock(return_value=Mock(returncode=0))
+    ready = Mock()
+    monkeypatch.setattr(desk, 'listener', identify)
+    monkeypatch.setattr(desk, 'start_process', launch)
+    monkeypatch.setattr(desk, 'wait_ready', ready)
+    monkeypatch.setattr(desk.subprocess, 'run', open_page)
 
     assert desk.start(True) == 0
-    missing = [p for p in (8765, 8770) if p not in running]
-    assert [call.args[0] for call in start.call_args_list] == missing
-    open_pages.assert_called_once_with(['/usr/bin/open', desk.url(8765), desk.url(8770)], check=False)
-    assert list(cleanup.call_args.args[0]) == missing
+    identify.assert_called_once_with(8765)
+    if running:
+        launch.assert_not_called()
+    else:
+        launch.assert_called_once_with(8765)
+    ready.assert_called_once_with(8765, None if running else child)
+    open_page.assert_called_once_with(['/usr/bin/open', desk.url(8765)], check=False)
 
 
-def test_v2_conflict_keeps_original_page_available(monkeypatch, tmp_path):
+def test_failed_start_cleans_up_its_own_backend(monkeypatch, tmp_path):
     monkeypatch.setattr(desk, 'ROOT', tmp_path)
-    monkeypatch.setattr(desk, 'listener', Mock(side_effect=[object(), RuntimeError('foreign 8770')]))
-    monkeypatch.setattr(desk, 'wait_ready', Mock())
-    start = Mock()
-    open_pages = Mock(return_value=Mock(returncode=0))
-    monkeypatch.setattr(desk, 'start_process', start)
-    monkeypatch.setattr(desk.subprocess, 'run', open_pages)
-    assert desk.start(True) == 1
-    start.assert_not_called()
-    open_pages.assert_called_once_with(['/usr/bin/open', desk.url(8765)], check=False)
+    child = Mock(poll=Mock(return_value=None))
+    monkeypatch.setattr(desk, 'listener', lambda port: None)
+    monkeypatch.setattr(desk, 'start_process', lambda port: child)
+    monkeypatch.setattr(desk, 'wait_ready', Mock(side_effect=RuntimeError('not ready')))
+    with pytest.raises(RuntimeError, match='not ready'):
+        desk.start(False)
+    child.terminate.assert_called_once()
+    child.wait.assert_called_once()
 
 
 def test_backend_claims_port_before_spawning_a_collector(monkeypatch):

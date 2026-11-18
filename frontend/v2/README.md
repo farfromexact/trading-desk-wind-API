@@ -1,16 +1,12 @@
 # 盘面解说 V2
 
-V2 在本机 8770 展示原看板 8765 的缓存。两个页面使用同一份 WindPy 行情、期权和机会记录。Mac 稳定分支 `codex/mac-stable` 包含两个页面。
+独立 V2 是原版行情卡和盘中解说的早期展示页。Mac 日常运行 8765 整合看板，源码保留用于维护历史版本。下方带日期的验证记录描述当时的独立服务。
 
 ## 在 Mac 运行
 
-1. 首次安装在稳定工作目录运行 `./install-mac.command`，配置官方 WindPy 并安装锁定的前端依赖。
-2. 双击 [Start Dashboard Mac.command](../../Start%20Dashboard%20Mac.command)。就绪后浏览器会同时打开[原版](http://127.0.0.1:8765/)和[盘面解说](http://127.0.0.1:8770/)。重复启动复用已有服务，仅缺 V2 时只启动展示进程。
-3. 双击 [Stop Dashboard Mac.command](../../Stop%20Dashboard%20Mac.command) 关闭两项服务。启动窗口的 Control+C 只关闭该窗口启动的进程。
-
-需要单独重建或运行 8770 时，用 [Start Dashboard V2 Mac.command](../../Start%20Dashboard%20V2%20Mac.command)。两个启动入口都支持 `--no-browser`。8765 暂时离线时，V2 提示连接状态并定时重试。
-
-从试用版升级时，若原仓库下 `.tmp/mac-v2` 的同仓库试用进程仍在 8770 服务，启动器会复用它。下次完整停止并启动时，会从稳定工作目录构建 V2。
+1. 首次安装在稳定工作目录运行 `./install-mac.command`。
+2. 双击 [Start Dashboard Mac.command](../../Start%20Dashboard%20Mac.command) 打开 [8765 整合看板](http://127.0.0.1:8765/)。旧 V2 快捷入口也打开这页。
+3. 双击 [Stop Dashboard Mac.command](../../Stop%20Dashboard%20Mac.command) 关闭工作台。启动终端的 Control+C 只关闭该窗口启动的进程。
 
 ETF 行按共享缓存的频率展示。Mac 的 WindPy WSD 日频截面显示实际数据日期，金额单位缩放仍待核验。具有源时钟的日内累计使用原 V2 的时效校验。展示页按需读取本机缓存。
 

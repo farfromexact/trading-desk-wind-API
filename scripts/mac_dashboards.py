@@ -1,10 +1,11 @@
-"""Open both Mac dashboards in one foreground session with one WindPy backend."""
+"""Open the integrated Mac dashboard and stop verified dashboard processes."""
 
 import argparse
 from contextlib import contextmanager
 from dataclasses import dataclass
 import fcntl
-from http.client import HTTPException
+from http.client import HTTPConnection, HTTPException
+import json
 import os
 from pathlib import Path
 import signal
@@ -13,8 +14,7 @@ import subprocess
 import sys
 import time
 
-from scripts.serve_dashboard_v2 import ROOT, read_local_json
-
+ROOT = Path(__file__).resolve().parents[1]
 BACKEND, V2 = 8765, 8770
 HOST = '127.0.0.1'
 
@@ -26,7 +26,7 @@ def url(port):
 def v2_directory(path):
     if path == ROOT:
         return True
-    # The published trial can still be serving 8770 on the first stable launch.
+    # Older installs may still have a standalone V2 process to stop.
     if path != (ROOT / '.tmp/mac-v2').resolve() or not (path / '.git').is_file():
         return False
     prefix, _, git_dir = (path / '.git').read_text().strip().partition(': ')
@@ -88,9 +88,6 @@ def launch_lock():
 
 
 def start_process(port):
-    if port == V2:
-        return subprocess.Popen([sys.executable, '-X', 'utf8', 'scripts/serve_dashboard_v2.py',
-                                 '--port', str(port), '--build'], cwd=ROOT, start_new_session=True)
     # Claim the actual TCP port before uvicorn runs the app lifespan and starts Wind.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -102,85 +99,56 @@ def start_process(port):
             cwd=ROOT, pass_fds=(sock.fileno(),), start_new_session=True)
 
 
-def wait_ready(port, child, existing):
+def wait_ready(port, child):
     deadline = time.monotonic() + 60
-    path = '/openapi.json' if port == BACKEND else '/v2-api/health'
     while time.monotonic() < deadline:
+        connection = HTTPConnection(HOST, port, timeout=1)
         try:
-            info = read_local_json(port, path, 1)
-            valid = isinstance(info, dict)
-            if valid and port == BACKEND:
-                valid = isinstance(info.get('info'), dict) and info['info'].get('title') == 'Wind 实时机会工作台'
-            elif valid:
-                valid = (info.get('service') == 'wind-desk-v2' and info.get('version') == 2
-                         and isinstance(info.get('root'), str) and v2_directory(Path(info['root'])))
-                if valid and info.get('pid') != (existing.pid if existing else child.pid):
-                    # A standalone V2 launch may have won the port while ours was starting.
-                    actual = listener(port)
-                    valid = existing is None and actual is not None and info.get('pid') == actual.pid
-            if not valid:
-                raise RuntimeError(f'端口 {port} 的看板身份不匹配')
-            return
+            connection.request('GET', '/openapi.json')
+            response = connection.getresponse()
+            if response.status == 200:
+                schema = json.load(response)
+                info = schema.get('info') if isinstance(schema, dict) else None
+                if not isinstance(info, dict) or info.get('title') != 'Wind 实时机会工作台':
+                    raise RuntimeError(f'端口 {port} 的看板身份不匹配')
+                return
         except (OSError, HTTPException, ValueError):
             pass
+        finally:
+            connection.close()
         if child is not None and child.poll() is not None:
             raise RuntimeError(f'{port} 启动退出，请查看上方日志')
         time.sleep(.25)
     raise RuntimeError(f'{port} 在 60 秒内没有就绪，请查看启动日志')
 
 
-def close_owned(children):
-    for port, child in reversed(list(children.items())):
-        if child.poll() is None:
-            try:
-                if port == V2:
-                    os.killpg(child.pid, signal.SIGINT)  # Also stop a build still in progress.
-                else:
-                    child.terminate()  # Let uvicorn drain its own Wind worker.
-            except ProcessLookupError:
-                pass
-    for child in children.values():
-        child.wait()
-
-
 def start(open_browser):
-    children = {}
-    pages = []
+    child = None
     try:
         with launch_lock():
-            for port in (BACKEND, V2):
-                try:
-                    running = listener(port)
-                    if running is None:
-                        children[port] = start_process(port)
-                    wait_ready(port, children.get(port), running)
-                    pages.append(url(port))
-                    print(f'{"复用" if running else "已启动"} {pages[-1]}', flush=True)
-                except (OSError, RuntimeError) as exc:
-                    if port == BACKEND:
-                        raise
-                    print(f'V2 暂不可用：{exc}。原版仍可使用。', file=sys.stderr, flush=True)
-                    if port in children:
-                        close_owned({port: children.pop(port)})
-            if open_browser:
-                result = subprocess.run(['/usr/bin/open', *pages], check=False)
-                if result.returncode:
-                    print('请在浏览器打开上方地址。', file=sys.stderr)
-        if children:
-            print('保持此终端打开。Control+C 关闭本窗口启动的服务。', flush=True)
-            primary = children.get(BACKEND) or children[V2]
-            if primary.wait() not in (0, -signal.SIGTERM, -signal.SIGINT):
-                return 1
-        return 0 if len(pages) == 2 else 1
+            running = listener(BACKEND)
+            if running is None:
+                child = start_process(BACKEND)
+            wait_ready(BACKEND, child)
+            page = url(BACKEND)
+            print(f'{"复用" if running else "已启动"} {page}', flush=True)
+            if open_browser and subprocess.run(['/usr/bin/open', page], check=False).returncode:
+                print(f'请在浏览器打开 {page}', file=sys.stderr)
+        if child is None:
+            return 0
+        print('保持此终端打开。Control+C 关闭本窗口启动的服务。', flush=True)
+        return int(child.wait() not in (0, -signal.SIGTERM, -signal.SIGINT))
     finally:
-        close_owned(children)
+        if child is not None and child.poll() is None:
+            child.terminate()
+            child.wait()
 
 
-def stop(check_only):
+def stop(check_only, ports=(V2, BACKEND)):
     with launch_lock():
         # Identify both independently. A foreign port must never receive a signal.
         failed = False
-        for port in (V2, BACKEND):
+        for port in ports:
             try:
                 current = listener(port)
                 if current is None:
