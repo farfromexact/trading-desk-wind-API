@@ -51,17 +51,23 @@
 
 如 PowerShell 阻止脚本，使用 CMD 启动器；其中执行策略只作用于该进程，不修改系统策略。
 
-## 盘面解说 V2（Windows）
+## 盘面解说 V2
 
-V2保留原看板，另提供“结论 → 证据 → 细节”的实时视图：规则摘要、分组行情卡、风格证据、ETF日内主力净流入、机会价格条和近30分钟事件。
+V2 从原看板的行情缓存展示规则摘要、分组行情卡、风格证据、ETF 主力净流入、机会价格条和近 30 分钟事件。ETF 金额旁显示日内时间或日频数据日期。
+
+**Windows**
 
 - 双击根目录 **[Start Dashboard V2.cmd](Start%20Dashboard%20V2.cmd)**，自动构建并打开 **http://127.0.0.1:8770/**。已有同仓库8765后台时直接复用，未运行时才调用原启动器；仍只有一个Wind采集器。
 - 双击 **[Stop Dashboard V2.cmd](Stop%20Dashboard%20V2.cmd)** 只关闭V2展示服务，原看板与共享采集继续运行。要停止行情采集，使用原来的 **Stop Dashboard.cmd**。
 - 原 **Start Dashboard.cmd**、**Stop Dashboard.cmd** 和 **http://127.0.0.1:8765/** 保留。V2更新后关闭再启动即可重建，构建产物在忽略的`data/dashboard-v2/`，不覆盖原`frontend/dist/`。
 
+**macOS 试用**（`codex/mac-sync-v2`）
+
+先打开原看板，首次在 V2 工作目录运行 `npm ci --prefix frontend`，然后双击 [Start Dashboard V2 Mac.command](Start%20Dashboard%20V2%20Mac.command)。按 Control+C 可以只关闭 8770 的展示服务。
+
 顶部8张卡统一显示现价相对前一完整日盘收盘的变化，标注“较前收盘”，可能与期货昨结算口径不同。数据缺失不补零；过期或断线暂停结论，恢复后自动更新。V2只读已有数据，不新增正式信号或声音提醒。历史分位、全A同刻成交额及涨跌停家数仍未接入。
 
-使用、数据边界与手工启动见 **[V2说明](frontend/v2/README.md)**，本轮验证见 **[发布报告](reports/dashboard-v2-2026-11-17.md)**。Mac稳定分支及专用入口未修改；Mac接收V2需在目标机器另行验证。
+两端的启动方式、数据口径和 Mac 试用记录见 [V2 说明](frontend/v2/README.md)。Windows 初次发布的验证见 [11 月 17 日发布报告](reports/dashboard-v2-2026-11-17.md)。
 
 ## 监控品种
 

@@ -1,6 +1,6 @@
 import React, {useEffect, useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {contracts, headline, styleEvidence, radarItems, recentEvents, optionSummary, finite, signed, clock, clockSeconds, tone, viewTime, equityPhase, sourceQuality, sourceUsable, etfQuality, metricQuality} from './model.js';
+import {contracts, headline, styleEvidence, radarItems, recentEvents, optionSummary, finite, signed, clock, clockSeconds, tone, viewTime, equityPhase, sourceQuality, sourceUsable, etfFlowReading, metricQuality} from './model.js';
 import {startLiveFeed, feedHealth} from './live-feed.js';
 import './style.css';
 
@@ -63,13 +63,23 @@ function StylePanel({snapshot}) {
       <strong>{r.display}</strong><span>{r.verdict}{!r.calibrated?' · 未校准':''}</span>
     </div>)}</div>
     <p className="quiet-note">{style.description}</p>
-    <div className="etf-summary"><div><b>ETF 日内主力净流入</b><small>各选一只样本 · 不计入风格确认</small></div><div className="etf-values">{(snapshot.context.etfs||[]).map(e=>{const q=etfQuality(e.flow,snapshot),valid=sourceUsable(q);return <span key={e.code} title={`${e.code} · ${e.flow?.time||'缺时间'} · ${q}`}><small>{e.root}</small><b className={valid?tone(e.flow?.value):'data-muted'}>{valid?money(e.flow?.value):'—'}</b>{!valid&&<small className="data-issue">{q}</small>}</span>;})}</div></div>
+    <div className="etf-summary">
+      <div><b>ETF 主力净流入</b><small>各选一只样本 · 不计入风格确认</small></div>
+      <div className="etf-values">{(snapshot.context.etfs || []).map(etf => {
+        const flow = etfFlowReading(etf.flow, snapshot);
+        return <span key={etf.code} title={etf.code + ' · ' + flow.detail}>
+          <small>{etf.root}</small>
+          <b className={flow.value === null ? 'data-muted' : tone(flow.value)}>{money(flow.value)}</b>
+          <small>{flow.caption}</small>
+        </span>;
+      })}</div>
+    </div>
     {(!snapshot.context.monitoring||snapshot.context.error)&&<p className="quiet-note">{snapshot.context.error||'盘面背景自动更新未开启；此页只读取已有缓存。'}</p>}
     <button className="expand-button" onClick={()=>setExpanded(!expanded)} aria-expanded={expanded}>{expanded?'收起':'展开'}广度、成交与申赎明细 <span>{expanded?'−':'+'}</span></button>
     {expanded&&<div className="style-details"><div className="breadth-list">{(snapshot.context.breadths||[]).map(b=><div key={b.code}>
       <span>{b.name}<small>{b.scope==='board'?'Wind板块聚合':'指数样本'}</small></span><div className="breadth-meter"><i style={{width:`${breadthDisplay(b)==='—'?0:Math.max(0,Math.min(100,b.value??0))}%`}}/></div><b>{breadthDisplay(b)}</b><small>{breadthDisplay(b)==='—'?metricQuality(b,asof,phase):`5m ${signed(b.change_pp,1)}pp`}</small>
     </div>)}</div><div className="detail-facts">{Object.entries(snapshot.context.activity||{}).map(([root,a])=><p key={root}><span>{root} 15m成交 / 20日同刻中位数 · {clock(a.time)}</span><b>{finite(a.value)&&!snapshot.context.error&&sourceUsable(metricQuality(a,asof,phase,15))?a.value.toFixed(2)+'×':'—'}</b></p>)}{snapshot.context.etfs?.map(e=><p key={e.code}><span>{e.root} 估算净申赎 · {e.daily?.data_date}</span><b>{money(e.daily?.value)}</b></p>)}</div>
-    <p className="quiet-note">ETF 超大单与大单买入额减卖出额；独立单位对照未完成。估算净申赎为份额变化×净值，与二级市场资金流不相加。</p></div>}
+    <p className="quiet-note">日内累计来自超大单与大单的买卖额差。日频截面按数据日期展示，单位缩放待核验。估算净申赎按份额变化乘单位净值计算。</p></div>}
   </section>;
 }
 
