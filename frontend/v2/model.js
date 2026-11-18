@@ -55,7 +55,7 @@ export function contracts(snapshot) {
     const daily=history.filter(b=>b.end.slice(0,10)===quoteDate&&b.end.slice(11,16)>='09:00'&&b.end<=state.server_time);
     const cross=context.cross?.find(r=>r.code===i.contract);
     const price=i.quote?.rt_last;
-    const calculated=finite(price)&&prior?.close>0 ? (price/prior.close-1)*100 : null;
+    const calculated=finite(price)&&price>0&&finite(prior?.close)&&prior.close>0 ? (price/prior.close-1)*100 : null;
     // All eight cards share the same cached close reference. A slower context
     // percentage must not freeze an otherwise live price or mix settlement bases.
     const pct=calculated;

@@ -2,6 +2,7 @@ import React, {useEffect, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {contracts, headline, styleEvidence, radarItems, recentEvents, optionSummary, finite, signed, clock, clockSeconds, tone, viewTime, equityPhase, sourceQuality, sourceUsable, etfQuality, metricQuality} from './model.js';
 import {startLiveFeed, feedHealth} from './live-feed.js';
+import {MarketCardGrid} from '../shared/market-cards.jsx';
 import './style.css';
 
 const short = s => s?.split('.')[0]||'—';
@@ -9,41 +10,6 @@ const price = (n, i) => finite(n)?n.toFixed(i?.market?.decimals??2):'—';
 const money = n => finite(n)?signed(n/1e8)+'亿':'—';
 function Arrow({direction='right'}) {return <span aria-hidden="true">{direction==='right'?'↗':'↓'}</span>;}
 function SectionTitle({number,title,meta,children}) {return <div className="section-title"><div><span className="section-number">{number}</span><h2>{title}</h2><span className="section-meta">{meta}</span></div>{children}</div>;}
-
-function Spark({item}) {
-  const series=item.daily.filter(b=>finite(b.close));
-  if(series.length<2)return <div className="spark-empty">分钟线待补齐</div>;
-  const values=series.map(b=>b.close), baseline=item.prevClose;
-  const lo=Math.min(...values,finite(baseline)?baseline:Infinity),hi=Math.max(...values,finite(baseline)?baseline:-Infinity),range=hi-lo||1;
-  const y=v=>45-(v-lo)/range*36;
-  const d=series.map((b,n)=>`${n?'L':'M'}${4+n/(series.length-1)*152},${y(b.close)}`).join(' ');
-  return <svg className="spark" viewBox="0 0 160 52" aria-label={`${item.root} 日盘5分钟收盘走势，虚线为前收盘`} role="img">
-    {finite(baseline)&&<line x1="2" x2="158" y1={y(baseline)} y2={y(baseline)} stroke="var(--muted)" strokeDasharray="3 4" opacity=".45"/>}
-    <path d={`${d} L156,52 L4,52 Z`} fill="currentColor" opacity=".045"/><path d={d} stroke="currentColor" strokeWidth="1.7" fill="none"/>
-    <circle cx="156" cy={y(values.at(-1))} r="2.5" fill="currentColor"/>
-  </svg>;
-}
-
-function MarketCards({items,selected,setSelected}) {
-  const groups=[['股指',['IM','IF','IH']],['贵金属',['AG','AU']],['原油',['SC']],['国债',['T','TL']]];
-  return <section id="markets" className="markets">
-    <SectionTitle number="01" title="先看哪里在动" meta="日涨跌与15分钟结构分开读"/>
-    <div className="market-groups">{groups.map(([group,roots])=><div className={`market-group size-${roots.length}`} key={group}>
-      <div className="group-label">{group}<span>{roots.length.toString().padStart(2,'0')}</span></div>
-      <div className="market-cards">{roots.map(root=>{const i=items.find(x=>x.root===root);if(!i)return null;
-        return <button key={root} className={`market-card ${tone(i.pct)} ${!i.usable?'data-muted':''} ${selected===root?'selected':''}`} onClick={()=>setSelected(root)} aria-pressed={selected===root} aria-label={`查看 ${root} ${i.market.name} 走势`} title={`${i.basisDetail}\n涨跌幅源时间 ${i.changeTime}\n现价时间 ${i.market_time}`}>
-          <div className="card-name"><b>{root}</b><span>{i.market.name.replace('年国债','年债').replace('中证','').replace('沪深','').replace('上证','')}</span></div>
-          <div className="card-change">{signed(i.pct)}<small>{finite(i.pct)?'%':''}</small></div>
-          <div className="change-basis">{i.basis}{!i.usable?' · '+i.quality:''}</div>
-          <Spark item={i}/>
-          <div className="card-structure"><span>15m结构</span><b>{i.regime?.state==='bull'?'↑ 多头':i.regime?.state==='bear'?'↓ 空头':'↔ 震荡'}</b></div>
-          <div className="card-price">{short(i.contract)}<span>{price(i.price,i)}</span></div>
-        </button>;
-      })}</div>
-    </div>)}</div>
-    <div className="section-foot">涨跌幅：现价 / 前一完整日盘收盘 − 1 · 曲线：5分钟收盘价　<span>期货与昨结算口径可能不同；历史波动基准待接入</span></div>
-  </section>;
-}
 
 function StylePanel({snapshot}) {
   const [expanded,setExpanded]=useState(false);
@@ -175,7 +141,11 @@ function App() {
         {rules&&<div className="rules-box"><b>有证据才下结论；这些是展示规则。</b><p>广度差达到20个百分点、相对同刻成交偏向达到1.15×时描述偏向；价格只报告近5分钟实际价差，不冒充统计显著。三维冲突显示“证据分歧”，不合成评分。阈值为待校准初值。</p><p>八张卡以实时价对比前一完整日盘收盘；期货相对昨结算的涨跌幅可能不同，悬停可核对后台原值。商品“领跌”只比较 AG / AU / SC，不比较跨资产风险；T、TL 同涨才写“国债期货走高”。机会状态完全沿用原策略，历史触价不升级为实时确认。</p><p>历史日收益标准差、IV / skew 同期限分位尚未接入；缺失保持缺失。报价保留15秒门槛及后台健康检查；分钟指标按完整K线节奏检查，午休和收盘标为回顾；断线暂停摘要。</p></div>}
         {exceptions.length>0&&<p className="exception-note">局部数据异常：{exceptions.map(i=>`${i.root} ${i.quality}`).join('；')}，对应项不参与摘要。</p>}
       </section>
-      <MarketCards items={items} selected={selected} setSelected={setSelected}/>
+      <section id="markets" className="markets">
+        <SectionTitle number="01" title="先看哪里在动" meta="日涨跌与15分钟结构分开读"/>
+        <MarketCardGrid items={items} selected={selected} onSelect={setSelected} paused={paused}/>
+        <div className="section-foot">涨跌幅：现价 / 前一完整日盘收盘 − 1 · 曲线：5分钟收盘价　<span>期货与昨结算口径可能不同；历史波动基准待接入</span></div>
+      </section>
       <div className="main-grid"><StylePanel snapshot={snapshot}/><Radar items={items} setSelected={setSelected}/></div>
       <div className="detail-grid" id="detail"><section className="panel chart-panel"><SectionTitle number="04" title="需要时，再看细节" meta="点击上方品种切换"/>{snapshot.transport?.bars_loading?.length>0&&<p className="quiet-note">正在载入 {snapshot.transport.bars_loading.length} 个品种的分钟线缓存，实时报价独立更新。</p>}<CandleChart key={active.contract} item={active}/><Options snapshot={snapshot} selected={active.root}/></section><EventFeed snapshot={snapshot}/></div>
       <footer><span>结论 → 证据 → 细节</span><p>只读 WindPy 缓存 · 原策略、提醒与行情采集保持原样</p><span>WIND DESK / V2</span></footer>
