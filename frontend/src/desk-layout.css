@@ -1,4 +1,11 @@
 /* Shared production/preview layout. Wide monitors keep context beside price structure. */
+.desk-markets { margin: 3px 0 16px; }
+.desk-market-heading { display: flex; align-items: baseline; gap: 14px; margin: 4px 0 12px; }
+.desk-market-heading h2 { font-size: 14px; }
+.desk-market-heading span { font-size: 10px; color: #8b9ba2; }
+.app:not(.atmosphere-idle) .desk-markets .market-card:not([data-signal]):not(.selected) {
+  border-color: rgba(var(--signal-rgb), .26);
+}
 .desk-workspace{grid-template-areas:"context context" "chart opportunities"}
 .desk-workspace>.chart-panel{grid-area:chart;min-width:0}
 .desk-workspace>.market-context{grid-area:context;min-width:0;margin-bottom:0}
