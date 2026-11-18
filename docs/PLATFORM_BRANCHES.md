@@ -68,6 +68,22 @@ Windows 不推 Mac 分支，Mac 不推 Windows 分支；不改对方专用启动
 
 从 Mac 向 Windows 接收功能时按同样规则反向进行。整个流程复用本机唯一 WindPy 采集器，不同时启动第二个采集进程；需要停服或真实请求时遵守 `AGENTS.md` 的现有约定。平台分支隔离发布节奏，不降低行情完整性、新鲜度、同步或交易规则门槛。
 
+### Windows 接收 11 月 18 日的整合面板
+
+`codex/shared-desk-panel` 从 Windows 稳定提交 `06c1036` 派生，包含原版的八张分组行情卡和顶栏盘中解说。解说共用原版的行情推送、盘面底色和五分钟线缓存。日常使用本机 8765 的原版入口即可。
+
+在 Windows 仓库确认本机改动已保存，在需要更新运行中的看板时先运行 `.\stop.ps1`。首次接收可在 PowerShell 执行以下命令，在临时分支重建并验证。
+
+```powershell
+git fetch origin
+git switch -c codex/windows-review-desk-panel origin/codex/windows-stable
+git merge --ff-only origin/codex/shared-desk-panel
+.\install.ps1
+.\start.ps1
+```
+
+打开 8765，检查顶部解说、八个品种和点击切换主图，盘中确认行情持续更新。若 Windows 稳定分支已产生新提交而无法快进，先比较两边的差异，在临时分支接入共享界面。Windows 实机验收后再从 Windows 发布到 `codex/windows-stable`，之后继续按日常流程 pull。
+
 ## 文档与本机文件
 
 - README、AGENTS 和本文件都说明分支规则，后续接手必须先读当前分支中的版本。
