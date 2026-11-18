@@ -101,7 +101,7 @@ Windows新增根目录`Start Dashboard V2.cmd`和`Stop Dashboard V2.cmd`，对�
 
 Windows 仅更新 V2 时，先关闭 8770，拉取 `codex/windows-stable` 后再启动 V2。若同时更新了 8765 后台，请按上面的完整后台更新流程操作。
 
-11 月 18 日的 Mac 试用分支为 `codex/mac-sync-v2`。试用工作目录里的 `Start Dashboard V2 Mac.command` 读取已有 8765 后台，在 8770 提供页面。盘前缓存与晚间 Wind 登录异常提示已在 Mac 核对，盘中连续行情待验。使用步骤和验收范围见 [V2 使用说明](../frontend/v2/README.md)。
+11 月 18 日晚起，Mac 稳定分支的日常入口只打开 8765，盘中解说和分组行情卡都在原版。Windows 原版的接收步骤见[平台分支说明](PLATFORM_BRANCHES.md#windows-接收-11-月-18-日的整合面板)。
 
 ## 已知问题与证据边界
 

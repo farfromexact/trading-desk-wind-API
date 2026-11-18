@@ -26,17 +26,15 @@ node frontend/node_modules/vite/bin/vite.js build --config frontend/v2/vite.conf
 
 前台展示服务用Control+C停止。
 
-## macOS 试用
+## macOS 整合看板
 
-Mac 试用分支是 `codex/mac-sync-v2`。先用原桌面入口启动 8765。在试用工作目录首次运行 `npm ci --prefix frontend` 安装锁定的依赖，再双击 [Start Dashboard V2 Mac.command](../../Start%20Dashboard%20V2%20Mac.command) 构建并打开 V2。脚本使用 Python 3 标准库。终端也可以运行 `./'Start Dashboard V2 Mac.command' --no-browser`。
-
-重复启动会复用本目录的 8770 服务。关闭 V2 时，在其终端按 Control+C，8765 的行情采集继续运行。
+在 `codex/mac-stable` 双击 `Start Dashboard Mac.command` 打开 8765，或使用原来的桌面快捷入口。顶栏解说、分组行情卡与主图共用原版已有的行情和盘面底色缓存。独立 V2 的试用记录见文末。
 
 ETF 资金流按缓存的实际频率显示。日内累计使用源时钟判断时效，WindPy WSD 日频截面显示数据日期。日频金额单位缩放仍待核验。
 
 ## 数据与文件
 
-- 原版与 V2 共用 `frontend/shared/market-cards.jsx` 及 `frontend/v2/model.js` 的涨跌幅计算。顶部按股指、贵金属、原油、国债分组，卡片同时显示相对前收盘的涨跌幅、五分钟走势、十五分钟结构与合约现价。
+- 原版与 V2 共用 `frontend/shared/market-cards.jsx` 及 `frontend/shared/market-model.js` 的涨跌幅计算。顶部按股指、贵金属、原油、国债分组，卡片同时显示相对前收盘的涨跌幅、五分钟走势、十五分钟结构与合约现价。
 - 原版从自己的 8765 读取卡片数据，选中的五分钟图复用已有请求，其余品种串行读取已完成的五分钟线缓存。卡片不登记一分钟图关注、不发起 Wind 查询。V2 的数据入口仍是 8770。
 - `scripts/serve_dashboard_v2.py`：只串行GET8765的`state`、`market-context`、`bars`和`events`，不导入Wind、不POST、不增加采集或图表关注租期。
 - `/v2-api/health`：仅返回V2身份、仓库路径和进程号，供启动/关闭核对，不读取行情后台。仅本机可访问。
