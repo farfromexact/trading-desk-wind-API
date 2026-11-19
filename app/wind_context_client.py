@@ -1,9 +1,11 @@
 """Normalize the existing collector's WindPy results for the read-only context book."""
 import json
+import time
 from pathlib import Path
 
 from .domain import iso, now, quote_time
-from .etf_context import DAILY_FIELD, DERIVED_DAILY_FIELD, ETF_SAMPLES, ETF_FLOW_COMPONENTS, ETF_FLOW_WSQ_FIELDS
+from .etf_context import (DAILY_FIELD, DERIVED_DAILY_FIELD, ETF_SAMPLES, ETF_FLOW_COMPONENTS,
+                          ETF_FLOW_CORE_FIELDS, ETF_FLOW_WSQ_FIELDS, ETF_ROLLING_FIELD)
 
 
 def columns(raw):
@@ -22,6 +24,7 @@ class WindPyContextClient:
     def __init__(self, desk, directory=None):
         self.desk = desk
         self.directory = Path(directory) if directory is not None else None
+        self.rolling_retry_at = 0.0
 
     async def request(self, method, *args):
         raw=await self.desk.context_query(method,*args)
@@ -66,10 +69,9 @@ class WindPyContextClient:
                     '最新交易日': str(int(r['rt_date'])) if r.get('rt_date') else None,
                     '涨跌幅': r['rt_pct_chg']*100 if r.get('rt_pct_chg') is not None else None, '成交额': r.get('rt_amt'), 'indicator_units': {'成交额': '元'}}))
         elif tool == 'get_fund_price_indicators':
-            # One complete WSQ batch; no WSD fallback or independent Wind login.
-            raw = await self.request('wsq', params['windcode'], ETF_FLOW_WSQ_FIELDS, 'unit=1')
+            raw = await self.etf_snapshot(params['windcode'])
             rows = self.flow_rows(raw, params['windcode'].split(','))
-            units = {field:'元' for field in ETF_FLOW_COMPONENTS}
+            units = dict.fromkeys((*ETF_FLOW_COMPONENTS, ETF_ROLLING_FIELD), '元')
         elif tool == 'fund_get_listed_historical_price':
             day = max((d for d in self.desk.calendar if d <= params['tradeDate']), default=None)
             if not day:
@@ -87,16 +89,35 @@ class WindPyContextClient:
             raise ValueError('不支持的 WindPy 背景查询')
         return dict(provider='WindPy', rows=rows, units=units, raw=raw)
 
+    async def etf_snapshot(self, codes):
+        if time.monotonic() >= self.rolling_retry_at:
+            try:
+                return await self.request('wsq', codes, ETF_FLOW_WSQ_FIELDS, 'unit=1')
+            except ValueError as exc:
+                # Keep today's flow and speed available if the optional indicator is refused.
+                message = str(exc).lower()
+                if not any(reason in message for reason in ('invalid indicator', '无效指标', '权限',
+                                                            'permission', '未完整返回')):
+                    raise
+                self.rolling_retry_at = time.monotonic() + 1800
+        return await self.request('wsq', codes, ','.join(ETF_FLOW_CORE_FIELDS), 'unit=1')
+
     @staticmethod
     def flow_rows(raw, expected_codes):
         codes = raw['Codes']
         fields = [field.lower() for field in raw['Fields']]
+        core = set(ETF_FLOW_CORE_FIELDS)
         if (len(codes) != len(set(codes)) or set(codes) != set(expected_codes)
-                or len(fields) != len(set(fields)) or set(fields) != set(ETF_FLOW_WSQ_FIELDS.split(','))
-                or len(raw['Data']) != len(fields)
-                or any(len(col) != len(codes) for col in raw['Data'])):
+                or len(fields) != len(set(fields)) or set(fields) not in (core, core | {ETF_ROLLING_FIELD})
+                or len(raw['Data']) != len(fields)):
             raise ValueError('ETF实时资金流代码、字段或矩阵不完整')
-        return [dict(code=code, source='WindPy WSQ', **row) for code,row in cross_section(raw).items()]
+        cols = dict(zip(fields, raw['Data']))
+        aligned = {f: values for f, values in cols.items()
+                   if isinstance(values, (list, tuple)) and len(values) == len(codes)}
+        if not core.issubset(aligned):
+            raise ValueError('ETF实时资金流代码、字段或矩阵不完整')
+        return [dict(code=code, source='WindPy WSQ', **{f: values[i] for f, values in aligned.items()})
+                for i, code in enumerate(codes)]
 
     @staticmethod
     def daily_rows(raw, field, requested_day):
@@ -117,6 +138,24 @@ class WindPyContextClient:
         return [dict(code=code, data_date=actual, value=value, field=field, source='WindPy WSD',
                      frequency='daily_snapshot' if field=='mfd_inflow_m' else 'daily')
                 for code, value in zip(raw['Codes'], values)]
+
+    async def etf_daily_flows(self, codes, days):
+        """Historical full-session reference only. Never use WSD as an intraday observation."""
+        raw = await self.request('wsd', ','.join(codes), 'mfd_inflow_m', days[0], days[-1],
+                                 'unit=1;Fill=Blank')
+        returned = raw['Codes']
+        dates = [str(t)[:10] for t in raw['Times']]
+        if (len(returned) != len(codes) or set(returned) != set(codes)
+                or [f.lower() for f in raw['Fields']] != ['mfd_inflow_m']
+                or len(set(dates)) != len(dates) or not set(days).issubset(dates)
+                or any(d < days[0] or d > days[-1] for d in dates)):
+            raise ValueError('ETF历史日频资金流的代码、字段或交易日不符')
+        if len(dates) == 1:
+            rows = self.daily_rows(raw, 'mfd_inflow_m', dates[0])
+            return {r['code']: {dates[0]: r['value']} for r in rows}
+        if len(raw['Data']) != len(returned) or any(len(col) != len(dates) for col in raw['Data']):
+            raise ValueError('ETF历史日频资金流矩阵不完整')
+        return {code: dict(zip(dates, col)) for code, col in zip(returned, raw['Data'])}
 
     @staticmethod
     def subscription_estimate(raw,code,before,day):

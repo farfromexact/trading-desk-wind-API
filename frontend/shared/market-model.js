@@ -64,8 +64,22 @@ const positive = value => finite(value)&&value>0;
 const dayOf = stamp => stamp.slice(0,10);
 const hmOf = stamp => stamp.slice(11,16);
 
-// The backend has validated trading-day ownership and completed bars. Group
-// chart points by their observed day or overnight session for display.
+// A full equity-index session has 48 completed five-minute bars.
+export const CARD_TREND_BARS = 48;
+
+function cardTrend(history) {
+  const bars = history.slice(-CARD_TREND_BARS);
+  const segments = [];
+  for (const [i, bar] of bars.entries()) {
+    if (i === 0 || Date.parse(bar.end) - Date.parse(bars[i - 1].end) !== 5 * 60_000) {
+      segments.push({firstSlot: CARD_TREND_BARS - bars.length + i, bars: []});
+    }
+    segments.at(-1).bars.push(bar);
+  }
+  return {bars, segments};
+}
+
+// Identify the session for the detail chart and the previous-close reference.
 function chartSession(stamp, market) {
   if(!stamp)return null;
   const day=dayOf(stamp);
@@ -127,6 +141,7 @@ export function contracts(snapshot) {
     const quality = price !== null && !finite(pct) ? '收盘基准待载入' : observation.quality;
     const cross = context.cross?.find(row => row.code === contract);
     return {...instrument, mode: snapshot.mode, price, pct, changeTime, quality, quoteUsable, daily, curveSession, sourceSession,
+      trend: cardTrend(history),
       usable: finite(pct) && (quoteUsable || reviewPhase(instrument.phase)), priceSource: observation.source,
       prevClose: prior?.close, prevCloseTime: prior?.end, basis: '较前收盘',
       basisDetail: `相对 ${prior?.end?.slice(0,10)||'缺失'} ${clock(prior?.end)} 的完整5分钟收盘价。${cross?` Wind 原涨跌幅 ${signed(cross.change_pct)}%（${datedClock(cross.time)}），基准可能不同。`:''}`};

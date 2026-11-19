@@ -12,10 +12,11 @@ from pathlib import Path
 
 from .wind_context_client import WindPyContextClient
 from .domain import dt, iso, now
-from .etf_context import ETF_SAMPLES, ETF_FLOW_FIELDS, DAILY_FIELD, daily_etf_rows, flow_records, daily_records
+from .etf_context import ETF_CODES, ETF_SAMPLES, ETF_FLOW_FIELDS, DAILY_FIELD, daily_etf_rows, flow_records, daily_records
+from .etf_flow_history import BASELINE_DAYS, EtfFlowHistory
 
 REFRESH_SECONDS = 30
-ETF_FLOW_SECONDS = 60
+ETF_FLOW_SECONDS = 15
 
 INDICES = {'IM': '000852.SH', 'IF': '000300.SH', 'IH': '000016.SH'}
 COUNTS = {'000016.SH': 50, '000300.SH': 300, '000852.SH': 1000, '000688.SH': None, '399006.SZ': None}
@@ -53,6 +54,19 @@ def cash_session(stamp):
     return None
 
 
+def etf_session(at, calendar):
+    if not calendar:
+        return '等待日历'
+    if at.date().isoformat() not in calendar:
+        return '非交易日'
+    if cash_session(at):
+        return '交易中'
+    clock = at.strftime('%H:%M')
+    if clock < '09:30':
+        return '盘前'
+    return '午休' if clock < '13:00' else '已收盘'
+
+
 def mcp_rows(envelope):
     if envelope.get('provider') == 'WindPy':
         return envelope['rows'], envelope['units']
@@ -86,18 +100,21 @@ class ContextBook:
         self.snapshots = data.get('snapshots', {})
         self.cross = data.get('cross', [])
         self.etf_flow = data.get('etf_flow', {})
+        self.flow_history = EtfFlowHistory()
+        self.etf_closes = data.get('etf_closes', {})
         self.etf_daily = data.get('etf_daily', {})
         self.etf_daily_checked_at = data.get('etf_daily_checked_at')
         self.updated_at = data.get('updated_at')
 
     def json(self):
-        return dict(version=4, provider=self.provider, bars=self.bars, snapshots=self.snapshots, cross=self.cross,
+        return dict(version=5, provider=self.provider, bars=self.bars, snapshots=self.snapshots, cross=self.cross,
                     etf_flow=self.etf_flow, etf_daily=self.etf_daily, etf_daily_checked_at=self.etf_daily_checked_at,
-                    updated_at=self.updated_at)
+                    etf_closes=self.etf_closes, updated_at=self.updated_at)
 
     def add_etf_flow(self, rows, units, received_at):
         incoming = flow_records(rows, units, received_at, number)
         for code, row in incoming.items():
+            self.flow_history.record(row)
             old = self.etf_flow.get(code, {})
             if row.get('frequency')=='daily_snapshot':
                 if (row['value'] is not None or old.get('value') is None) and row['data_date']>=old.get('data_date',''):
@@ -248,7 +265,7 @@ class ContextBook:
                 gap['change_pp'] = small['change_pp']-large['change_pp']
         return dict(strength=strength, turnover=turnover, breadth_gap=gap)
 
-    def view(self, at=None):
+    def view(self, at=None, calendar=()):
         at = dt(at or now())
         breadths = {code:self.breadth_view(code, at) for code in COUNTS}
         share = breadths[INDICES['IM']]
@@ -273,13 +290,16 @@ class ContextBook:
                         value.update(value=window['amount']/statistics.median(amounts), reason='')
             activity[root] = value
         etfs = []
+        prior_days = sorted(d for d in calendar if d < at.date().isoformat())[-BASELINE_DAYS:]
         for root, sample in ETF_SAMPLES.items():
             flow, daily = self.etf_flow.get(sample['code']), self.etf_daily.get(sample['code'])
             if flow and (dt(flow['observed_at']) > at or flow.get('time') and dt(flow['time']) > at):
                 flow = None
             if daily and (dt(daily['observed_at']) > at or daily['data_date'] >= at.date().isoformat()):
                 daily = None
-            etfs.append(dict(root=root, **sample, flow=flow, daily=daily))
+            metrics = self.flow_history.compare(sample['code'], flow, at, prior_days,
+                                                self.etf_closes.get(sample['code'], {}))
+            etfs.append(dict(root=root, **sample, flow=flow, daily=daily, comparison=metrics))
         return dict(breadth=share, breadths=list(breadths.values()), rotation=rotation, style=style, activity=activity, cross=self.cross, etfs=etfs,
                     updated_at=self.updated_at, generated_at=iso(at))
 
@@ -298,7 +318,9 @@ class MarketContext:
         # The old WSD amount must never appear beneath the new intraday label.
         self.book.etf_flow = {code:row for code,row in self.book.etf_flow.items()
                               if row.get('source') == 'WindPy WSQ'
-                              and row.get('frequency') == 'intraday_cumulative'}
+                              and row.get('frequency') == 'intraday_cumulative'
+                              and code in ETF_CODES}
+        self.restore_etf_snapshots()
         self.client = client or WindPyContextClient(desk,directory)
         self.disabled = desk.offline or os.environ.get('WIND_DESK_CONTEXT_DISABLED') == '1'
         self.settings_path = Path(directory)/'market-context-settings.json'
@@ -320,6 +342,30 @@ class MarketContext:
         self.audit = None
         self.last_flow_attempt = float('-inf')
         self.last_daily_attempt = float('-inf')
+        self.last_etf_history_attempt = float('-inf')
+        self.pause_flow_slot = None
+
+    def restore_etf_snapshots(self):
+        # The existing append-only receipts also retain observations between context writes.
+        cutoff = (now().date()-timedelta(days=60)).strftime('%Y%m%d')
+        for path in sorted(self.path.parent.glob('market-context-windpy-observed-????????.jsonl')):
+            if path.stem[-8:] < cutoff:
+                continue
+            try:
+                with path.open(encoding='utf-8') as file:
+                    for line in file:
+                        if 'get_fund_price_indicators' not in line:
+                            continue
+                        try:
+                            record = json.loads(line)
+                            response = record['response']
+                            if record['tool'] == 'get_fund_price_indicators' and response.get('provider') == 'WindPy':
+                                rows = [r for r in response['rows'] if r.get('source') == 'WindPy WSQ']
+                                self.book.add_etf_flow(rows, response['units'], record['observed_at'])
+                        except (TypeError, ValueError, KeyError):
+                            continue
+            except OSError:
+                continue
 
     def set_monitor(self, enabled):
         if self.disabled:
@@ -334,11 +380,13 @@ class MarketContext:
         self.monitor = bool(enabled)
 
     def snapshot(self):
-        return dict(**self.book.view(), busy=bool(self.task and not self.task.done()),
+        at = now()
+        return dict(**self.book.view(at, self.desk.calendar), busy=bool(self.task and not self.task.done()),
                     monitoring=self.monitor, disabled=self.disabled, error=self.error,
                     calls=self.calls, etf_errors=self.etf_errors, audit=self.audit,
                     history_loading=self.history_loading, history_errors=self.history_errors,
-                    source='WindPy · 本机 Wind 登录', interval_seconds=REFRESH_SECONDS)
+                    source='WindPy · 本机 Wind 登录', interval_seconds=REFRESH_SECONDS, etf_interval_seconds=ETF_FLOW_SECONDS,
+                    etf_session=etf_session(at, self.desk.calendar))
 
     def request_refresh(self):
         if self.disabled:
@@ -371,18 +419,20 @@ class MarketContext:
         except Exception as exc:
             self.audit=dict(error=str(exc),observed_at=iso(now()))
 
+    async def query(self, tool, params, parser=mcp_rows):
+        self.calls += 1
+        envelope = await self.client.call(tool, params)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        archive = self.path.parent/('market-context-windpy-observed-'+now().strftime('%Y%m%d')+'.jsonl')
+        with archive.open('a', encoding='utf-8') as file:
+            file.write(json.dumps(dict(observed_at=iso(now()), tool=tool, params=params,
+                                       response=envelope), ensure_ascii=False, allow_nan=False)+'\n')
+        return parser(envelope)
+
     async def refresh(self):
         self.error = None
         try:
-            async def query(tool, params, parser=mcp_rows):
-                self.calls += 1
-                envelope = await self.client.call(tool, params)
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                archive = self.path.parent/('market-context-windpy-observed-'+now().strftime('%Y%m%d')+'.jsonl')
-                with archive.open('a', encoding='utf-8') as file:
-                    file.write(json.dumps(dict(observed_at=iso(now()), tool=tool, params=params,
-                                               response=envelope), ensure_ascii=False, allow_nan=False)+'\n')
-                return parser(envelope)
+            query = self.query
             problems=[]
             day=max((d for d in self.desk.calendar if d<=now().date().isoformat()),default=None)
             updated=False
@@ -445,13 +495,16 @@ class MarketContext:
         except Exception as exc:
             self.error = str(exc) if isinstance(exc, ValueError) else '背景查询失败，保留原时间'
         finally:
-            try:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                temporary = self.path.with_suffix('.tmp')
-                temporary.write_text(json.dumps(self.book.json(), ensure_ascii=False, allow_nan=False), encoding='utf-8')
-                temporary.replace(self.path)
-            except OSError:
-                self.error = '背景缓存写入失败，本轮仅保留内存数据'
+            self.save()
+
+    def save(self):
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_suffix('.tmp')
+            temporary.write_text(json.dumps(self.book.json(), ensure_ascii=False, allow_nan=False), encoding='utf-8')
+            temporary.replace(self.path)
+        except OSError:
+            self.error = '背景缓存写入失败，本轮仅保留内存数据'
 
     async def refresh_history(self, query, day):
         # Cold start adds at most one bounded request per refresh, after live snapshots.
@@ -493,19 +546,7 @@ class MarketContext:
 
     async def refresh_etfs(self, query):
         codes = [sample['code'] for sample in ETF_SAMPLES.values()]
-        # One intraday snapshot per minute at most; preserve foreground priority.
-        if time.monotonic()-self.last_flow_attempt >= ETF_FLOW_SECONDS:
-            self.last_flow_attempt = time.monotonic()
-            try:
-                rows, units = await query('get_fund_price_indicators', dict(windcode=','.join(codes), indexes=ETF_FLOW_FIELDS))
-                incoming = self.book.add_etf_flow(rows, units, now())
-                if len(incoming) != len(codes) or any(x['value'] is None for x in incoming.values()):
-                    raise ValueError('部分ETF资金流缺失或口径未通过校验')
-                self.etf_errors.pop('flow', None)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self.etf_errors['flow'] = 'ETF资金流未完整更新：'+str(exc)
+        await self.refresh_etf_monitor(query)
         # At most once per successful local date; failed/partial daily responses retry after 30m.
         today = now().date().isoformat()
         checked = self.book.etf_daily_checked_at
@@ -536,12 +577,56 @@ class MarketContext:
             if any(word in str(exc) for word in ('让行','暂缓','连接尚未就绪')):
                 self.last_daily_attempt=time.monotonic()-1770
 
+    async def refresh_etf_monitor(self, query):
+        if time.monotonic()-self.last_flow_attempt < ETF_FLOW_SECONDS:
+            return
+        self.last_flow_attempt = time.monotonic()
+        codes = [s['code'] for s in ETF_SAMPLES.values()]
+        try:
+            rows, units = await query('get_fund_price_indicators', dict(windcode=','.join(codes), indexes=ETF_FLOW_FIELDS))
+            incoming = self.book.add_etf_flow(rows, units, now())
+            if len(incoming) != len(codes) or any(r['value'] is None for r in incoming.values()):
+                raise ValueError('部分ETF资金流缺失或口径未通过校验')
+            self.etf_errors.pop('flow', None)
+        except Exception as exc:
+            self.etf_errors['flow'] = 'ETF资金流未完整更新：'+str(exc)
+        prior = sorted(d for d in self.desk.calendar if d < now().date().isoformat())[-BASELINE_DAYS:]
+        if len(prior) < BASELINE_DAYS or time.monotonic()-self.last_etf_history_attempt < 1800:
+            return
+        missing = [d for d in prior if any(self.book.etf_closes.get(c, {}).get(d) is None for c in codes)]
+        if not missing:
+            return
+        self.last_etf_history_attempt = time.monotonic()
+        try:
+            self.calls += 1
+            amounts = await self.client.etf_daily_flows(codes, missing)
+            for code in codes:
+                previous = self.book.etf_closes.get(code, {})
+                values = {d: number(amounts[code].get(d)) for d in missing}
+                self.book.etf_closes[code] = {d: values[d] if values.get(d) is not None else previous.get(d)
+                                              for d in prior}
+            self.save()
+            if any(self.book.etf_closes[c][d] is None for c in codes for d in prior):
+                raise ValueError('部分交易日缺少日频主力净流入')
+            self.etf_errors.pop('full_day', None)
+        except Exception as exc:
+            self.etf_errors['full_day'] = '20日全日参考待补：'+str(exc)
+
     async def run(self):
         while True:
-            if (self.monitor and not self.disabled and self.desk.calendar
-                    and now().date().isoformat() in self.desk.calendar
-                    and cash_session(now()) is not None):
-                self.request_refresh()
+            at = now()
+            phase = etf_session(at, self.desk.calendar)
+            slot = (at.date(), phase)
+            if not self.disabled and getattr(self.desk, 'connected', False) and not self.desk.bootstrap:
+                if self.monitor and phase == '交易中':
+                    self.request_refresh()
+                # On a lunch/after-close launch, obtain the last exchange snapshot once.
+                closing = phase in ('午休', '已收盘') and self.pause_flow_slot != slot
+                if ((phase == '交易中' or closing) and (not self.task or self.task.done())
+                        and time.monotonic()-self.last_flow_attempt >= ETF_FLOW_SECONDS):
+                    if closing:
+                        self.pause_flow_slot = slot
+                    self.task = asyncio.create_task(self.refresh_etf_monitor(self.query))
             await asyncio.sleep(1)
 
     async def close(self):

@@ -337,6 +337,9 @@ class Desk:
 
     def handle(self, packet):
         kind=packet['type']
+        if kind in ('option_quotes','option_feed_error') and (
+                not self.options.enabled or self.options.stopping or packet.get('option_epoch')!=self.options.feed_epoch):
+            return
         if kind in ('quotes','option_quotes') and packet.get('received_ms'):
             self.quote_processing_lag_ms=max(0,time.time()*1000-packet['received_ms'])
         if kind=='option_quotes':
@@ -640,7 +643,8 @@ class Desk:
                 'acquisition':{'pending':request_status,
                                'native_requests':self.request_metrics,'quote_processing_lag_ms':self.quote_processing_lag_ms,
                                'option_queue':[dict(op=j['op'],root=j.get('root'),codes_count=len(j.get('codes',[]))) for j in self.options.jobs]},
-                'options':{'version':self.options.config['version'],'contexts':{r:self.options.context(r) for r in self.config['watchlist']},'metrics':self.options.metrics,
+                'options':{'version':self.options.config['version'],'monitor':self.options.monitor_state(),
+                           'contexts':{r:self.options.context(r) for r in self.config['watchlist']},'metrics':self.options.metrics,
                            'quotes':{code:{k:v for k,v in q.items() if k!='_field_seen'} for code,q in self.options.quotes.items()}}}
 
     def set_watch(self, root, code):

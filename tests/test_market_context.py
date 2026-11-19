@@ -337,7 +337,7 @@ def test_board_vendor_scope_is_explicit_and_never_claims_index_coverage():
     assert b.breadth_view('000688.SH',dt(stamp))['value'] is None
 
 
-def test_faster_breadth_does_not_double_etf_flow_requests(tmp_path, monkeypatch):
+def test_background_refresh_and_etf_monitor_share_one_fifteen_second_flow_batch(tmp_path, monkeypatch):
     import app.market_context as context
     tick=[100.]
     monkeypatch.setattr(context, 'time', SimpleNamespace(monotonic=lambda:tick[0]))
@@ -349,21 +349,29 @@ def test_faster_breadth_does_not_double_etf_flow_requests(tmp_path, monkeypatch)
     service=MarketContext(SimpleNamespace(offline=False,watch={},calendar=set()),tmp_path,client=Client())
     async def run():
         assert service.snapshot()['interval_seconds']==30
+        assert service.snapshot()['etf_interval_seconds']==15
         assert service.request_refresh()
         await service.task
-        tick[0]+=29
+        tick[0]+=14
+        await service.refresh_etf_monitor(service.query)
+        assert calls.count('get_fund_price_indicators')==1
+        tick[0]+=1
+        await service.refresh_etf_monitor(service.query)
+        assert calls.count('get_fund_price_indicators')==2
+        tick[0]+=14
         assert not service.request_refresh()
         tick[0]+=1
         assert service.request_refresh()
         assert not service.request_refresh()  # still single flight
         await service.task
         assert calls.count('get_index_price_indicators')==2
-        assert calls.count('get_fund_price_indicators')==1
+        await service.refresh_etf_monitor(service.query)
+        assert calls.count('get_fund_price_indicators')==3
         tick[0]+=30
         assert service.request_refresh()
         await service.task
         assert calls.count('get_index_price_indicators')==3
-        assert calls.count('get_fund_price_indicators')==2
+        assert calls.count('get_fund_price_indicators')==4
         assert calls.count('fund_get_listed_historical_price')==1
         await service.close()
     asyncio.run(run())

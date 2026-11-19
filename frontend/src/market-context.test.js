@@ -78,7 +78,9 @@ test('intraday flow keeps source time, valid zero and missing component reason',
   const base={source:'WindPy WSQ',frequency:'intraday_cumulative',unit:'元',time:'2026-11-17T10:02:00+08:00'};
   const rows=etfRows({etfs:[{code:'512100.SH',flow:{...base,value:0}},
     {code:'510300.SH',flow:{...base,value:null,reason:'实时大单字段缺失'}},
-    {code:'510050.SH',flow:{...base,value:-2e8}}]},'2026-11-17T10:03:00+08:00');
+    {code:'159915.SZ',flow:{...base,value:-2e8}}, {code:'510050.SH',flow:{...base,value:5e8}}]},'2026-11-17T10:03:00+08:00');
+  assert.deepEqual(rows.map(r=>r.code),['512100.SH','510300.SH','159915.SZ','588000.SH']);
+  assert.equal(rows[3].flow.display,'—');
   assert.equal(rows[0].flow.display,'0.00亿');
   assert.equal(rows[0].flow.stage,'日内累计');
   assert.equal(rows[0].flow.status,'最近');
