@@ -90,12 +90,7 @@ export function MarketContextPanel({source,clock,instruments=[], connected=true,
       </span>):<span className="mc-cross-empty">商品样本 / T、TL · 等待对应监测合约快照</span>}
       <span className="mc-cross-note">各自时点 · 不推断资金轮动</span>
     </div>
-    <div className="mc-etfs"><table aria-label="ETF盘中资金流与日频净申赎"><thead><tr><th scope="col">ETF样本 <MetricHelp label="ETF样本">每个指数只选一只ETF作观察样本，不代表跟踪该指数的所有ETF，也不代表整个指数的资金流。</MetricHelp></th>{etfs.map(row=><th scope="col" key={row.code}>{row.name}<small>{row.code.split('.')[0]} · {row.manager}</small></th>)}</tr></thead><tbody>
-      <tr><th scope="row">主力净流入 <MetricHelp label="主力净流入">Wind超大单与大单买入额减卖出额，日内累计，金额显示亿元；每60秒最多取一次快照。“主力”是订单大小分类，不等于已识别机构。时间取同批行情RT_DATE/RT_TIME，不代表资金流逐笔更新时间。缺项不补零，与ETF申赎不相加。</MetricHelp><small>二级市场 · 日内累计</small></th>{etfs.map(row=><td key={row.code} title={`${row.flow.time||'源时间未取得'} · ${row.flow.reason||row.flow.source||'WindPy资金流口径'} · ${row.flow.time_basis||''} · 本机收到 ${row.flow.observed_at||'未取得'}`}>
-        <strong className={row.flow.value>0?'mc-up':row.flow.value<0?'mc-down':'mc-empty'}>{row.flow.display}</strong>
-        <span className="mc-etf-time">{row.flow.timeLabel} · {row.flow.time||row.flow.data_date?row.flow.stage:'暂缺'}</span>
-        <span className="mc-etf-status">{row.flow.status}</span>
-      </td>)}</tr>
+    <div className="mc-etfs"><table aria-label="ETF日频净申赎"><thead><tr><th scope="col">ETF样本 <MetricHelp label="ETF样本">每个指数各选一只代表ETF，展示上一完整交易日的份额变化。</MetricHelp></th>{etfs.map(row=><th scope="col" key={row.code}>{row.name}<small>{row.code.split('.')[0]} · {row.manager}</small></th>)}</tr></thead><tbody>
       <tr><th scope="row">{etfs.some(r=>r.daily.estimated)?'估算净申赎':'日频净申赎'} <MetricHelp label="净申赎">上一完整交易日的ETF份额净变化 × 当日单位净值，金额显示亿元。这是估算，不是逐笔现金到账；数据日和披露时刻不同，不代表该数据日盘中已知。与二级市场资金流分开看。</MetricHelp><small>{etfs.some(r=>r.daily.estimated)?'份额变化 × 单位净值':'Wind申赎净流入额'}</small></th>{etfs.map(row=><td key={row.code} title={`本机收到 ${row.daily.observed_at||'未取得'}；实际披露时刻未核实，不代表此数据日盘中已知。${row.daily.reason||''}`}>
         <strong className={row.daily.value>0?'mc-up':row.daily.value<0?'mc-down':'mc-empty'}>{row.daily.display}</strong>
         <span className="mc-etf-time">{row.daily.dateLabel}</span>
@@ -107,7 +102,7 @@ export function MarketContextPanel({source,clock,instruments=[], connected=true,
       <div className="mc-definitions">{[...metrics.slice(0,1),...rotation,...metrics.slice(2)].map(metric=><p key={metric.label}><b>{metric.label}</b>{metric.detail||'等待已确认结构；行情不就绪时不推定位置。'}</p>)}</div>
       <p>商品仅含已监测的 AG、AU、SC 样本；国债仅含 T、TL。各合约保留自己的交易日与时间，夜盘与日盘不直接加总。涨跌幅为行情源口径；成交额为名义成交额，不能当作资金净流入。</p>
       {cross.map(row=><p key={row.code}>{row.label} · {contextTime(row.time)} · 交易日 {row.trading_day} · 累计成交额 {row.amountLabel}</p>)}
-      <p>ETF二级市场流向采用 WindPy WSQ 的超大单、大单买入额减卖出额，按日内累计展示，请求元单位。三只ETF合并一批，每60秒最多查询一次；任一输入缺失则不计算，无日频或MCP回退。时间来自同一快照的RT_DATE/RT_TIME，是行情时间，不是资金流逐笔更新时间；本机收到时间单列。主力是订单大小分类，不据此识别机构身份。旧WSD和MCP资金流缓存不用于此面板。</p>
+      <p>左侧资金流采用 WindPy WSQ 超大单、大单买入额减卖出额。四只ETF盘中每15秒合并查询，保留每只的行情快照时间。累计净额和近5分钟净流速分别与前20个交易日同刻的算术均值比较。全日参考取 WindPy WSD 的历史日频主力净流入。</p>
       <p>净申赎采用 WindPy UNIT_TOTAL 与 NAV：上一完整交易日的份额净变化×当日单位净值，单位元，明确标记“估算净申赎”。这是资产规模流入估算，不是接口直接返回的申赎金额，也不是逐笔现金到账；与原MCP字段不等同。只使用当前日期之前两个实际交易日的数据，缺任一输入则缺失。数据日、本机收到时间与披露时刻不同，披露时刻未核实，不能回填为历史盘中已知。</p>
       {etfs.map(row=><p key={row.code}>{row.name} {row.code}：资金流源时间 {row.flow.time||'未取得'}；日频数据日 {row.daily.data_date||'未取得'}；日频本机收到 {row.daily.observed_at||'未取得'}；{context?.etf_errors?.flow||context?.etf_errors?.daily||'无本轮ETF查询错误'}</p>)}
       <p>前三张是指数样本；科创板、创业板采用Wind板块聚合口径，通过000688.SH / 399006.SZ取聚合家数，不是50 / 100只指数样本。板块卡按Wind实际返回家数计算，未独立核验全板覆盖和停牌处理，不宣称已逐只核验；它们不参与右侧1000/300比较。近5分钟变化只比较相同交易时段、目标时刻之前90秒内的源快照，缺历史显示待积累。期货资金流未接入。所有空值保持缺失；这组背景不改变原有机会确认或声音规则。</p>

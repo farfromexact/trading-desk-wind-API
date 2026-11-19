@@ -120,6 +120,7 @@ $env:WIND_DESK_OPTIONS_DISABLED='1'
 .\stop.ps1
 Remove-Item Env:WIND_DESK_OPTIONS_DISABLED
 .\start.ps1
+# 在 8765 页面的“期权采集”栏点击“开启期权采集”，再运行下面的观察脚本。
 .\.venv\Scripts\python.exe scripts/observe_stability.py --mode options-on --seconds 900 --output reports/windows-options-on.json
 ```
 

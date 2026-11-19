@@ -97,7 +97,8 @@ def test_pending_subscription_changes_coalesce_without_dropping_snapshots(tmp_pa
 
 def test_option_dispatch_during_incremental_refresh_remains_single_and_blocks_bootstrap(tmp_path):
     import queue
-    d=Desk(tmp_path,offline=True); o=d.options
+    d=Desk(tmp_path); o=d.options
+    o.set_monitor(True)
     d.commands=queue.Queue()
     try:
         o.entries['SC']=dict(contract='SC2612.INE',epoch=1)
@@ -115,6 +116,76 @@ def test_option_dispatch_during_incremental_refresh_remains_single_and_blocks_bo
         d.pending.clear()  # previous low-priority request completed
         o.dispatch_next()
         assert d.commands.get_nowait()['codes']==['SC2612P590.INE']
+    finally:
+        d.stop()
+
+
+def test_option_switch_drains_inflight_work_and_rejects_late_quotes(tmp_path,monkeypatch):
+    import queue
+    d=Desk(tmp_path)
+    o=d.options
+    d.commands=queue.Queue()
+    d.connected=True
+    contract='IM2612.CFE'
+    index='000852.SH'
+    d.watch={'IM':contract}
+    d.calendar=CAL
+    d.calendars={'CFFEX':CAL}
+    monkeypatch.setattr('app.options_service.now',lambda:AT)
+    monkeypatch.setattr('app.service.now',lambda:AT)
+
+    def finish(command, **fields):
+        d.handle(dict(type='response',id=command['id'],payload=None,**fields))
+
+    try:
+        asyncio.run(o.tick())
+        assert not o.enabled and d.commands.empty() and not o.entries
+        o.set_monitor(True)
+        asyncio.run(o.tick())
+        first=d.commands.get_nowait()
+        assert first['op']=='option_subscribe' and index in first['codes']
+        packet=dict(type='option_quotes',option_epoch=first['option_epoch'],records={index:quote(100)},received_at=iso(AT))
+        d.handle(packet)
+        assert index in o.quotes
+        d.quotes[contract]=quote(102)
+        futures_request=d.submit('snapshot',codes=[contract])
+        assert d.commands.get_nowait()['op']=='snapshot'
+        assert o.set_monitor(False)['stopping']
+        assert not o.jobs and not o.entries and not o.quotes
+        # Two browser tabs can switch before Wind finishes the old registration.
+        o.set_monitor(True)
+        asyncio.run(o.tick())
+        assert d.commands.empty()
+        finish(first)
+        asyncio.run(o.tick())
+        cancel=d.commands.get_nowait()
+        assert cancel['op']=='option_unsubscribe'
+        finish(cancel,error='busy')
+        asyncio.run(o.tick())
+        assert o.monitor_state()['error']=='busy' and d.commands.empty()
+        o.stop_retry_at=0
+        asyncio.run(o.tick())
+        cancel=d.commands.get_nowait()
+        assert cancel['op']=='option_unsubscribe'
+        finish(cancel)
+        asyncio.run(o.tick())
+        fresh=d.commands.get_nowait()
+        assert fresh['op']=='option_subscribe' and fresh['option_epoch']!=first['option_epoch']
+        d.handle(packet)
+        assert not o.quotes
+        d.handle(dict(packet,option_epoch=fresh['option_epoch']))
+        assert index in o.quotes
+
+        finish(fresh)
+        o.set_monitor(False)
+        o.set_monitor(False)
+        asyncio.run(o.tick())
+        cancel=d.commands.get_nowait()
+        assert cancel['op']=='option_unsubscribe'
+        finish(cancel)
+        asyncio.run(o.tick())
+        assert not o.enabled and not o.stopping and not o.quotes and d.commands.empty()
+        assert futures_request in d.pending and d.quotes[contract]['rt_last']==102 and d.metrics['restarts']==0
     finally:
         d.stop()
 
@@ -277,17 +348,18 @@ def test_extended_calendar_does_not_change_completed_bar():
 
 
 def test_option_error_and_out_of_order_are_isolated(tmp_path,monkeypatch):
-    d=Desk(tmp_path,offline=True);o=d.options
+    d=Desk(tmp_path);o=d.options
+    o.set_monitor(True)
     d.connected=True;d.watch={'IM':'IM2612.CFE'};d.calendars={'CFFEX':CAL};d.calendar=CAL
     o.entries['IM']=dict(contract='IM2612.CFE',epoch=0,underlying='000852.SH',pool=[{'code':'MO2611-C-6500.CFE'}])
     monkeypatch.setattr('app.options_service.now',lambda:AT)
     code='MO2611-C-6500.CFE'
-    def send(q):d.handle(dict(type='option_quotes',records={code:q},received_at=iso(AT)))
+    def send(q):d.handle(dict(type='option_quotes',option_epoch=o.feed_epoch,records={code:q},received_at=iso(AT)))
     send(quote(3));send({'rt_bid1':2.9});send(quote(1,at=AT-timedelta(seconds=1)))
     assert o.quotes[code]['rt_last']==3 and o.quotes[code]['rt_bid1']==2.9
     send({'rt_ask1':None});assert o.quotes[code]['rt_ask1'] is None
-    d.handle(dict(type='option_feed_error',message='测试期权权限不足'))
-    assert d.connected and d.metrics['restarts']==0
+    d.handle(dict(type='option_feed_error',option_epoch=o.feed_epoch,message='测试期权权限不足'))
+    assert d.connected and d.metrics['restarts']==0 and o.metrics['errors']==1
     d.stop()
 
 
@@ -327,7 +399,8 @@ def test_futures_comparison_uses_book_and_actual_cost_config():
 
 def test_study_recovery_uses_frozen_quotes_and_fees(tmp_path,monkeypatch):
     context,rows,op=market_fixture()
-    d=Desk(tmp_path,offline=True);o=d.options
+    d=Desk(tmp_path);o=d.options
+    o.set_monitor(True)
     d.watch={'IM':op['contract']};d.calendars={'CFFEX':CAL};d.calendar=CAL
     d.quotes[op['contract']]=quote(102)
     o.entries['IM']=dict(contract=op['contract'],underlying='000852.SH',pool=rows,daily=[])
@@ -372,7 +445,8 @@ def test_excursions_include_intermediate_quotes_and_no_history_fill(tmp_path,mon
 
 
 def test_contract_switch_rejects_old_chain_response_and_clears_context(tmp_path,monkeypatch):
-    d=Desk(tmp_path,offline=True);o=d.options
+    d=Desk(tmp_path);o=d.options
+    o.set_monitor(True)
     monkeypatch.setattr('app.options_service.now',lambda:AT)
     monkeypatch.setattr('app.service.now',lambda:AT)
     d.calendars={'SHFE':CAL};d.watch={'AG':'AG2612.SHF'};d.code_epochs['AG2612.SHF']=1
@@ -380,7 +454,7 @@ def test_contract_switch_rejects_old_chain_response_and_clears_context(tmp_path,
     o.views['AG']={'ready':True};o.context_history['AG']=['old']
     d.watch['AG']='AG2702.SHF';d.code_epochs['AG2702.SHF']=2
     o.sync_watches()
-    o.handle(dict(op='option_chain',root='AG',future_contract='AG2612.SHF',watch_epoch=1),dict(payload={'contracts':[{'wrong':True}]},received_at=iso(AT)))
+    o.handle(dict(op='option_chain',root='AG',future_contract='AG2612.SHF',watch_epoch=1,option_epoch=o.feed_epoch),dict(payload={'contracts':[{'wrong':True}]},received_at=iso(AT)))
     assert not o.entries['AG']['contracts'] and o.entries['AG']['underlying']=='AG2702.SHF'
     assert 'AG' not in o.views and 'AG' not in o.context_history
     assert all(j['future_contract']=='AG2702.SHF' for j in o.jobs)
@@ -390,7 +464,8 @@ def test_contract_switch_rejects_old_chain_response_and_clears_context(tmp_path,
 @pytest.mark.parametrize('change',['contract','invalidated','data'])
 def test_candidate_discarded_if_state_changes_during_calculation(tmp_path,monkeypatch,change):
     from types import SimpleNamespace
-    d=Desk(tmp_path,offline=True);context,rows,op=market_fixture();o=d.options
+    d=Desk(tmp_path);context,rows,op=market_fixture();o=d.options
+    o.set_monitor(True)
     d.watch={'IM':op['contract']};d.calendar=CAL
     d.engines[op['contract']]=SimpleNamespace(opportunities={op['id']:op})
     o.entries['IM']={'contract':op['contract']};o.rows['IM']=rows
@@ -567,7 +642,8 @@ def test_expired_pool_remains_visible_but_does_not_queue_live_snapshots(tmp_path
 
 def test_live_market_backfill_precedes_closed_market_with_subscription_first(tmp_path,monkeypatch):
     import queue
-    d=Desk(tmp_path,offline=True);o=d.options;d.commands=queue.Queue()
+    d=Desk(tmp_path);o=d.options;d.commands=queue.Queue()
+    o.set_monitor(True)
     d.calendar=CAL;d.calendars={'CFFEX':CAL,'SHFE':CAL}
     monkeypatch.setattr('app.options_service.now',lambda:AT.replace(hour=21))
     try:

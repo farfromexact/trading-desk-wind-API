@@ -72,7 +72,8 @@ export function crossRows(context) {
 export function etfRows(context, clock = new Date()) {
   const expected = [{root:'IM',code:'512100.SH',name:'中证1000ETF',manager:'南方'},
     {root:'IF',code:'510300.SH',name:'沪深300ETF',manager:'华泰柏瑞'},
-    {root:'IH',code:'510050.SH',name:'上证50ETF',manager:'华夏'}];
+    {root:'创业板',code:'159915.SZ',name:'创业板ETF',manager:'易方达'},
+    {root:'科创50',code:'588000.SH',name:'科创50ETF',manager:'华夏'}];
   const money = x => finite(x) ? `${signed(x/1e8)}亿` : '—';
   return expected.map(sample => {
     const row = context?.etfs?.find(x=>x.code===sample.code) || {};
@@ -81,7 +82,7 @@ export function etfRows(context, clock = new Date()) {
     const flowValid = finite(flow.value) && flow.unit==='元' && flow.time && flow.frequency==='intraday_cumulative';
     const dailyValid = finite(daily.value) && daily.data_date && daily.unit==='元' && daily.frequency==='daily';
     const sourceClock = flow.time ? new Date(flow.time).toLocaleTimeString('en-GB',{timeZone:'Asia/Shanghai',hour12:false}) : '';
-    return {...sample,
+    return {...sample, comparison:row.comparison||{},
       flow:{...flow, value:flowValid?flow.value:null, display:money(flowValid?flow.value:null),
         timeLabel:datedFlow?`数据日 ${flow.data_date}`:flow.time?contextTime(flow.time):'时间未取得',
         stage:datedFlow?'旧日频截面（停用）':sourceClock>='15:00:00'?'收盘累计快照':'日内累计',

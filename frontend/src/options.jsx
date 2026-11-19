@@ -23,15 +23,25 @@ function useData(path,period=5000,refreshKey=null){
   return {data,error};
 }
 
-export function OptionsEnvironment({root,context,onOpen}){
+export function OptionsEnvironment({root,context,onOpen,monitor,onToggle,busy}){
   const first=context?.expiries?.[0];
+  const toggle=monitor && onToggle && <button type="button" aria-pressed={monitor.enabled}
+    disabled={busy||monitor.stopping||!!monitor.disabled_reason} onClick={onToggle}>
+    {monitor.stopping?'正在关闭…':monitor.enabled?'关闭期权采集':'开启期权采集'}</button>;
+  if(monitor && (!monitor.enabled||monitor.stopping)){
+    return <section className="option-environment" aria-label="期权环境">
+      <div className="option-env-title"><b>期权采集</b><small role="status">
+        {monitor.error?'取消订阅失败，正在重试：'+monitor.error:monitor.stopping?'正在取消 Wind 订阅':monitor.disabled_reason||'全部品种 · 已关闭'}</small></div>
+      <span className="option-env-actions">{toggle}</span>
+    </section>;
+  }
   return <section className="option-environment" aria-label="期权环境">
-    <div className="option-env-title"><span className="eyebrow">OPTIONS CONTEXT</span><b>{root} 期权环境</b><small className={context?.ready?'accent':'amber'}>{context?.status||'连接中'}</small></div>
+    <div className="option-env-title"><span className="eyebrow">OPTIONS CONTEXT</span><b>{root} 期权环境</b><small className={context?.ready?'accent':'amber'}>{context?.status||(monitor?.enabled?'等待期权链与盘口':'连接中')}</small></div>
     <div><small>平值 IV {first?.expiry?.slice(5)}</small><b>{pct(first?.atm_iv)}</b></div>
     <div><small>实际波动 RV5 / RV20</small><b>{pct(context?.rv5)} / {pct(context?.rv20)}</b></div>
     <div><small>25Δ 认沽 − 认购</small><b>{Number.isFinite(first?.put_minus_call_25d)?num(first.put_minus_call_25d*100)+' 波动点':'—'}</b></div>
     <div><small>15分钟 IV 变化</small><b>{Number.isFinite(context?.iv_change_15m)?num(context.iv_change_15m*100)+' 波动点':context?.readonly_preview?'未载入':'采集中'}</b></div>
-    <button onClick={onOpen}>期权链与研究 ↗</button>
+    <span className="option-env-actions"><button onClick={onOpen}>期权链与研究 ↗</button>{toggle}</span>
     <p>{context?.notes?.[0]||(context?.ready?'波动状态作为方向信号的补充，优势尚待验证':context?.phase&&context.phase!=='交易中'?'休市快照仅供观察，开市同步后再评估候选':'等待同步的标的和期权双边盘口')}<span>行情 {stamp(context?.market_time)}</span></p>
   </section>;
 }

@@ -25,6 +25,12 @@ class OptionsDesk:
         self.config=json.loads((ROOT/'options-config.json').read_text(encoding='utf-8'))
         if os.environ.get('WIND_DESK_OPTIONS_DISABLED')=='1':
             self.config['enabled']=False
+        # Collection is opt-in for this service run. The config flag is a hard limit.
+        self.enabled=False
+        self.feed_epoch=0
+        self.stopping=False
+        self.stop_error=None
+        self.stop_retry_at=0.
         self.config['fee_per_contract_each_side'].update(desk.store.get('option_fee_overrides',{}))
         self.config['hash']=stable_id(self.config)
         self.snapshot_received={}
@@ -51,9 +57,39 @@ class OptionsDesk:
         self.entries.clear(); self.jobs.clear(); self.last_subscription=()
         self.quotes.clear()
         self.snapshot_received.clear()
+        self.stopping=False
+        self.stop_error=None
+        self.stop_retry_at=0.
         self.continuous={'day':0.,'night':0.}
         for v in self.views.values():
             v.update(ready=False,status='连接恢复后等待重新同步')
+
+    def monitor_state(self):
+        reason=None
+        if self.desk.offline:
+            reason='离线模式'
+        elif not self.config['enabled']:
+            reason='启动配置已禁用期权采集'
+        return dict(enabled=self.enabled,stopping=self.stopping,disabled_reason=reason,error=self.stop_error)
+
+    def set_monitor(self, enabled):
+        reason=self.monitor_state()['disabled_reason']
+        if enabled and reason:
+            raise ValueError(reason)
+        if self.enabled!=enabled:
+            self.enabled=enabled
+            if enabled:
+                self.feed_epoch+=1
+                self.last_tick=time.monotonic()
+            else:
+                self.reset()
+                self.views.clear()
+                self.rows.clear()
+                self.context_history.clear()
+                self.last_calc.clear()
+                self.last_quote_record.clear()
+                self.stopping=self.desk.connected
+        return self.monitor_state()
 
     def error(self, root, message):
         self.metrics['errors']+=1
@@ -106,6 +142,15 @@ class OptionsDesk:
             self.queue('option_daily',root,underlying=underlying,start=(now()-timedelta(days=100)).date().isoformat(),end=now().date().isoformat())
 
     def handle(self, cmd, packet):
+        if cmd['op']=='option_unsubscribe':
+            self.stop_error=packet.get('error')
+            self.stopping=bool(self.stop_error)
+            if self.stop_error:
+                self.stop_retry_at=time.monotonic()+5
+                self.error(None,'取消订阅失败，将重试：'+self.stop_error)
+            return
+        if not self.enabled or self.stopping or cmd.get('option_epoch')!=self.feed_epoch:
+            return
         root=cmd.get('root'); e=self.entries.get(root)
         if not e or (e['contract'],e['epoch'])!=(cmd.get('future_contract'),cmd.get('watch_epoch')):
             return
@@ -251,7 +296,9 @@ class OptionsDesk:
         root=op['root']; ident=op['id']; stamp=event['known_at']
         if op['status']=='confirmed' and ident not in self.studies:
             # Freeze every baseline signal, including missing option coverage.
-            inputs=self.input_for(root,stamp) if root in self.entries else None
+            collecting=self.enabled and not self.stopping
+            inputs=self.input_for(root,stamp) if collecting and root in self.entries else None
+            missing='无期权覆盖' if collecting else '期权采集已关闭'
             prior=self.context(root)
             signal=dict(op=deepcopy(op),option_input=inputs,available_at=stamp,rule_hash=self.config['hash'],prior_context=prior)
             serial=deepcopy(signal)
@@ -259,7 +306,7 @@ class OptionsDesk:
                 serial['option_input']['calendar']=sorted(serial['option_input']['calendar'])
             self.desk.store.option_record(stable_id('option-signal',ident),root,'signal',serial,stamp)
             self.studies[ident]=dict(root=root,op=deepcopy(op),status='waiting',candidates=[],confirmation=stamp,
-                                     options_status='计算中' if inputs else '无期权覆盖',completed={},paths=0,
+                                     options_status='计算中' if inputs else missing,completed={},paths=0,
                                      futures_fee=self.config['futures_fee_per_contract_each_side'].get(root),futures_multiplier=self.config['futures_multiplier'][root],
                                      futures_tick=market(root)['tick_size'],slippage_ticks=self.config['slippage_ticks_each_side'],
                                      prior_context=prior)
@@ -283,14 +330,21 @@ class OptionsDesk:
         self.desk.store.set('option_studies',self.studies)
 
     async def tick(self):
-        if not self.config['enabled'] or self.desk.offline:
+        if self.stopping:
+            # A dispatched snapshot/registration may still be in flight. Drain it
+            # before cancelling the groups so it cannot re-register after shutdown.
+            if (self.desk.connected and time.monotonic()>=self.stop_retry_at
+                    and not any(p['cmd']['op'].startswith('option_') for p in self.desk.pending.values())):
+                self.desk.submit('option_unsubscribe')
+            return
+        if not self.enabled or self.desk.offline:
             return
         clock=time.monotonic(); elapsed=min(1,clock-self.last_tick); self.last_tick=clock
         if not self.desk.connected:
             return
         self.sync_watches()
         if self.task and self.task.done():
-            root,epoch,signal_id,source=self.task_meta
+            root,entry,signal_id,source=self.task_meta
             try:
                 context,rows=self.task.result()
                 if signal_id:
@@ -308,7 +362,7 @@ class OptionsDesk:
                     study.update(candidates=built,context=context,options_status='已有对照方案' if built else '；'.join(reasons))
                     self.desk.store.option_record(stable_id('option-comparison',signal_id),root,'comparison',dict(signal_id=signal_id,context=context,candidates=built,reasons=reasons),source['at'])
                     self.desk.store.set('option_studies',self.studies)
-                elif self.entries.get(root,{}).get('epoch')==epoch and self.entries[root]['contract']==source['contract']:
+                elif self.entries.get(root) is entry:
                     history=self.context_history.setdefault(root,deque(maxlen=240))
                     first=context['expiries'][0] if context['expiries'] else None
                     old=next((v for v in reversed(history) if timedelta(minutes=15)<=dt(context['generated_at'])-dt(v['generated_at'])<=timedelta(minutes=16) and v.get('expiry')==(first or {}).get('expiry')),None) if context['ready'] else None
@@ -327,6 +381,7 @@ class OptionsDesk:
             except Exception as exc:
                 self.error(root,f'估值暂停：{type(exc).__name__}: {exc}')
             self.task=None
+            self.task_meta=None
         if not self.task:
             if self.confirmations:
                 ident,source=self.confirmations.popleft(); root=source['root']
@@ -337,7 +392,7 @@ class OptionsDesk:
                 if ready:
                     root=min(ready,key=lambda r:self.last_calc.get(r,0))
                     source=self.input_for(root); self.last_calc[root]=clock
-                    self.task_meta=(root,self.entries[root]['epoch'],None,source)
+                    self.task_meta=(root,self.entries[root],None,source)
                     self.task=asyncio.create_task(asyncio.to_thread(compute_view,source))
         for root,e in self.entries.items():
             if e.get('retry_at',float('inf'))<=clock:
@@ -389,16 +444,18 @@ class OptionsDesk:
         # worker still prioritizes queued futures work. Waiting for every bars
         # response here can starve snapshots across consecutive refresh cycles.
         # Initial historical bootstrap remains protected.
+        if not self.enabled or self.stopping:
+            return
         if self.jobs and not any(p['cmd']['op'].startswith('option_') for p in self.desk.pending.values()) and not self.desk.history_pending:
             # Keep each root's order, but live-market work precedes closed-market backfill.
             job=min(self.jobs,key=lambda j:0 if j['op']=='option_subscribe' else 1 if phase(now(),j['root'],self.desk.calendar_for(j['root']))=='交易中' else 2)
             self.jobs.remove(job); job.pop('_key',None)
-            self.desk.submit(job.pop('op'),**job)
+            self.desk.submit(job.pop('op'),option_epoch=self.feed_epoch,**job)
 
     def context(self, root):
         if root not in OPTION_ROOTS:
             return dict(root=root,ready=False,status='无已验证覆盖',notes=['首版未核实T/TL直接场内期权链'],expiries=[])
-        if not self.config['enabled']:
+        if not self.enabled or self.stopping:
             return dict(root=root,ready=False,status='期权模块已关闭',notes=[],expiries=[])
         v=deepcopy(self.views.get(root,dict(root=root,ready=False,status=self.entries.get(root,{}).get('error') or '等待期权链与盘口',notes=[],expiries=[])))
         if self.desk.offline:
@@ -415,6 +472,8 @@ class OptionsDesk:
         return v
 
     async def candidate_view(self, root, op_id=None, holding_days=None):
+        if not self.enabled or self.stopping:
+            return dict(candidates=[],reasons=['期权采集已关闭'],context=self.context(root))
         e=self.entries.get(root)
         ops=list(self.desk.engines[e['contract']].opportunities.values()) if e and e['contract'] in self.desk.engines else []
         ops=[x for x in ops if not x.get('historical') and x.get('entry') and x['status'] in ('confirmed','triggered') and x.get('trading_day')==self.desk.current_day(root) and (not op_id or x['id']==op_id)]

@@ -31,6 +31,7 @@ class AsyncOptionSnapshots:
             if packet['type']=='option_feed_error':
                 job['error']=packet['message']
             else:
+                packet['option_epoch']=job['cmd'].get('option_epoch')
                 self.quotes.put(packet)
                 required=set(OPTION_FIELDS.split(','))
                 job['missing'].difference_update(code for code,fields in packet['records'].items() if required<=fields.keys())

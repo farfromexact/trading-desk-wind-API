@@ -35,9 +35,9 @@
 @media(prefers-reduced-motion:reduce){.mc-breadth-track i{transition:none}}
 
 .mc-help-anchor{display:inline-flex;align-items:center;vertical-align:middle;font-weight:400;letter-spacing:0}
-.market-context .mc-help-button{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;min-width:16px;padding:0;margin:0 0 0 2px;border:1px solid #58717f;border-radius:50%;background:#182731;color:#9eb9c6;font:10px/1 system-ui;cursor:help;box-shadow:none}
-.market-context .mc-help-button:hover,.market-context .mc-help-button[aria-expanded=true]{color:#e7f0f5;border-color:#a7c3d1;background:#2c4654}
-.market-context .mc-help-button:focus-visible{outline:2px solid #a7c3d1;outline-offset:3px}
+.mc-help-anchor>.mc-help-button{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;min-width:16px;padding:0;margin:0 0 0 2px;border:1px solid #58717f;border-radius:50%;background:#182731;color:#9eb9c6;font:10px/1 system-ui;cursor:help;box-shadow:none}
+.mc-help-anchor>.mc-help-button:hover,.mc-help-anchor>.mc-help-button[aria-expanded=true]{color:#e7f0f5;border-color:#a7c3d1;background:#2c4654}
+.mc-help-anchor>.mc-help-button:focus-visible{outline:2px solid #a7c3d1;outline-offset:3px}
 .mc-help-bubble{position:fixed;z-index:10020;box-sizing:border-box;width:310px;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:auto;padding:15px 17px;border:1px solid #577281;border-radius:10px;background:#15232ef5;box-shadow:0 12px 36px #0009;color:#c8d7e0;font:12px/1.85 system-ui,-apple-system,sans-serif;text-align:left;white-space:normal;letter-spacing:0}
 .mc-help-bubble>strong{display:block;color:#e1eef5;font-size:13px;font-weight:600;margin-bottom:7px}.mc-help-bubble>p{margin:0}.mc-help-bubble>small{display:block;margin-top:11px;padding-top:8px;border-top:1px solid #344b59;color:#8ba6b7;font-size:10px}
 .mc-breadth-delta .mc-help-button{width:13px;height:13px;min-width:13px;font-size:8px}.mc-card-name>span{display:flex;align-items:center;justify-content:space-between;gap:3px}
