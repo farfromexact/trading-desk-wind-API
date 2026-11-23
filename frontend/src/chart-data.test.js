@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeChartBars, followLatestRange, structureMarkers, spaceMarkerLabels } from './chart-data.js';
+import { mergeChartBars, updateChartCandles, followLatestRange, structureMarkers, spaceMarkerLabels } from './chart-data.js';
 
 test('final candles replace previews, while a new live candle stays visible',()=>{
   const closed=[{end:'10:35',close:101},{end:'10:40',close:102}];
@@ -16,6 +16,11 @@ test('append follows the latest candle and retains the zoom width',()=>{
   assert.deepEqual(followLatestRange({from:30,to:106},100,101),{from:31,to:107});
 });
 
+test('out-of-order or duplicate historical rows still normalize before rendering',()=>{
+  const rows=[{end:'10:40',close:101},{end:'10:35',close:99},{end:'10:40',close:102}];
+  assert.deepEqual(mergeChartBars(rows),[rows[1],rows[2]]);
+});
+
 test('reading historical candles does not jump back on a quote update',()=>{
   assert.equal(followLatestRange({from:10,to:80},100,101),null);
   assert.equal(followLatestRange(null,0,100),null);
@@ -23,6 +28,32 @@ test('reading historical candles does not jump back on a quote update',()=>{
 
 const at=t=>'2026-11-10T'+t+':00+08:00';
 const pivot=(t,scale='internal')=>({kind:'pivot',occurred_at:at(t),scale,side:'high'});
+
+test('unchanged ticks leave candles alone, quotes update the tail, corrections and rewinds replace history',()=>{
+  const full=[], updates=[];
+  const series={setData:rows=>full.push(rows),update:row=>updates.push(row)};
+  const closed={end:at('10:35'),open:100,high:105,low:99,close:102};
+  const live={...closed,end:at('10:40'),provisional:true};
+  let previous=[];
+  const draw=rows=>{updateChartCandles(series,previous,rows);previous=rows;};
+  draw([closed,live]);
+  for(let i=0;i<60;i++)draw([{...closed},{...live,as_of:i}]);
+  assert.deepEqual([full.length,updates.length],[1,0]);
+  draw([closed,{...live,close:104}]);
+  assert.equal(updates.at(-1).close,104);
+  assert.equal(updates.at(-1).borderColor,'#e0bd79');
+  const final={...live,provisional:false};
+  const next={...live,end:at('10:45')};
+  draw([closed,final,next]);
+  assert.deepEqual([full.length,updates.length],[1,3]);
+  assert.equal(updates[1].borderColor,undefined);
+  assert.equal(updates[2].time,Date.parse(next.end)/1000);
+  draw([{...closed,low:97},final,next]);
+  assert.equal(full.at(-1)[0].low,97);
+  draw([closed]);
+  draw([]);
+  assert.deepEqual(full.map(rows=>rows.length),[2,3,1,0]);
+});
 
 test('one-minute chart shows the known five-minute anchors with their source',()=>{
   const markers=structureMarkers([pivot('10:35')],[{end:at('10:34')},{end:at('10:35')},{end:at('10:36')}],1);

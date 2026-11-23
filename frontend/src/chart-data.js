@@ -1,8 +1,43 @@
 // Display-only previews are merged here, never sent to a signal/replay endpoint.
 export function mergeChartBars(closed, provisional=[]){
+  // Stored and replayed history already comes in timestamp order.
+  if(closed.every((b,i)=>i===0 || closed[i-1].end<b.end)){
+    if(!provisional.length)return closed;
+    const lastClosed=closed.at(-1)?.end||'';
+    if(provisional.every((b,i)=>b.end>(i?provisional[i-1].end:lastClosed)))return [...closed,...provisional];
+  }
   const rows=new Map(provisional.map(b=>[b.end,b]));
   for(const b of closed)rows.set(b.end,b); // Native finalized OHLC always wins.
   return [...rows.values()].sort((a,b)=>a.end.localeCompare(b.end));
+}
+
+function candlePoint(b){
+  const point={time:Date.parse(b.end)/1000,open:b.open,high:b.high,low:b.low,close:b.close};
+  if(b.provisional){
+    point.color=b.close>=b.open?'rgba(236,116,109,.35)':'rgba(86,188,167,.35)';
+    point.borderColor=point.wickColor='#e0bd79';
+  }
+  return point;
+}
+
+function sameCandle(a,b){
+  return a===b || (a.end===b.end && a.open===b.open && a.high===b.high
+    && a.low===b.low && a.close===b.close && Boolean(a.provisional)===Boolean(b.provisional));
+}
+
+export function updateChartCandles(series,previous,next){
+  if(previous===next)return;
+  let i=0;
+  while(i<previous.length && i<next.length && sameCandle(previous[i],next[i]))i++;
+  if(i===previous.length && i===next.length)return;
+  // The chart can replace its last candle or append. Corrections earlier in the
+  // series, removals and replay rewinds need a complete replacement.
+  if(!previous.length || next.length<previous.length || (i<previous.length &&
+      (i!==previous.length-1 || previous[i].end!==next[i].end))){
+    series.setData(next.map(candlePoint));
+    return;
+  }
+  for(;i<next.length;i++)series.update(candlePoint(next[i]));
 }
 
 export function followLatestRange(range,previousCount,nextCount){

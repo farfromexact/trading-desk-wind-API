@@ -10,6 +10,7 @@ class Store:
     def __init__(self, path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
+        self.bar_versions = {}
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.executescript('''
         CREATE TABLE IF NOT EXISTS bars(contract TEXT, timeframe INTEGER, end TEXT, payload TEXT, seen_at TEXT,
@@ -27,18 +28,28 @@ class Store:
 
     def save_bars(self, bars, seen_at):
         changed = []
-        for b in bars:
-            payload = json.dumps(b.json(), sort_keys=True)
-            old = self.db.execute('SELECT payload FROM bars WHERE contract=? AND timeframe=? AND end=?', (b.contract, b.timeframe, b.end)).fetchone()
-            if old and old[0] != payload:
-                self.db.execute('INSERT INTO revisions(contract,timeframe,end,previous,replacement,seen_at) VALUES(?,?,?,?,?,?)', (b.contract,b.timeframe,b.end,old[0],payload,seen_at))
-                changed.append(b)
-            self.db.execute('INSERT INTO bars VALUES(?,?,?,?,?) ON CONFLICT(contract,timeframe,end) DO UPDATE SET payload=excluded.payload,seen_at=excluded.seen_at', (b.contract,b.timeframe,b.end,payload,seen_at))
-        self.db.commit()
+        updated = set()
+        with self.db:
+            for b in bars:
+                payload = json.dumps(b.json(), sort_keys=True)
+                old = self.db.execute('SELECT payload FROM bars WHERE contract=? AND timeframe=? AND end=?', (b.contract, b.timeframe, b.end)).fetchone()
+                if not old or old[0] != payload:
+                    updated.add((b.contract, b.timeframe))
+                    if old:
+                        self.db.execute('INSERT INTO revisions(contract,timeframe,end,previous,replacement,seen_at) VALUES(?,?,?,?,?,?)', (b.contract,b.timeframe,b.end,old[0],payload,seen_at))
+                        changed.append(b)
+                self.db.execute('INSERT INTO bars VALUES(?,?,?,?,?) ON CONFLICT(contract,timeframe,end) DO UPDATE SET payload=excluded.payload,seen_at=excluded.seen_at', (b.contract,b.timeframe,b.end,payload,seen_at))
+        for key in updated:
+            self.bar_versions[key] = self.bar_versions.get(key, 0) + 1
         return changed
 
-    def bars(self, code, timeframe):
-        rows = self.db.execute('SELECT payload FROM bars WHERE contract=? AND timeframe=? ORDER BY end', (code,timeframe))
+    def bars(self, code, timeframe, after=None):
+        query = 'SELECT payload FROM bars WHERE contract=? AND timeframe=?'
+        params = (code, timeframe)
+        if after is not None:
+            query += ' AND end>?'
+            params += (after,)
+        rows = self.db.execute(query + ' ORDER BY end', params)
         return [Bar(**json.loads(r[0])) for r in rows]
 
     def event(self, event):
