@@ -75,6 +75,32 @@ def test_options_endpoints_and_fee_authorization(client):
     assert metrics['ui_over_2s']==1 and metrics['ui_samples']==1
 
 
+def test_options_monitor_is_shared_and_starts_off_each_run(tmp_path,monkeypatch):
+    async def no_worker(self):
+        pass
+    monkeypatch.setattr(Desk,'run',no_worker)
+    monkeypatch.setattr('app.main.Desk',lambda **kwargs:Desk(tmp_path))
+    path='/api/options/monitor'
+    for _ in range(2):
+        with TestClient(app) as c:
+            assert c.get('/api/state').json()['options']['monitor']['enabled'] is False
+            assert c.post(path,json={'enabled':True},headers={'Origin':'https://external.example'}).status_code==403
+            assert c.post(path,json={}).status_code==422
+            for choice in (True,True,False,False,True):
+                updated=c.post(path,json={'enabled':choice})
+                assert updated.status_code==200 and updated.json()['enabled']==choice
+                assert c.get('/api/state').json()['options']['monitor']==updated.json()
+    monkeypatch.setenv('WIND_DESK_OPTIONS_DISABLED','1')
+    with TestClient(app) as c:
+        assert c.post(path,json={'enabled':True}).status_code==400
+        assert c.get('/api/state').json()['options']['monitor']['disabled_reason']
+
+
+def test_offline_option_collection_cannot_be_enabled(client):
+    assert client.post('/api/options/monitor',json={'enabled':True}).status_code==400
+    assert client.get('/api/state').json()['options']['monitor']['enabled'] is False
+
+
 def test_chart_interest_rejects_unknown_contracts_and_remote_writes(client):
     assert client.post('/api/chart-interest',json={'contract':'unknown'}).status_code==400
     assert client.post('/api/chart-interest',json={'contract':'IM2612.CFE'},headers={'Origin':'https://external.example'}).status_code==403

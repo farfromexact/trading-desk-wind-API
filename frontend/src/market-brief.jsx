@@ -1,7 +1,7 @@
 import React from 'react';
 import {feedHealth, headline} from '../shared/market-model.js';
 
-const phaseLabels = {盘中: '盘中解说', 午休: '上午小结', 小节休息: '小节回顾', 休市: '休市回顾'};
+const phaseLabels = {盘前: '盘前回顾', 盘中: '盘中解说', 午休: '上午小结', 小节休息: '小节回顾', 休市: '休市回顾'};
 
 export function MarketBrief({snapshot, items, connected, preview, replay}) {
   let label = '盘中解说', title = '等待本机行情。', subtitle, paused = true;

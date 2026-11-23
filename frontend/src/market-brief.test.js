@@ -22,3 +22,16 @@ test('the brief uses the same completed bars and eligible quotes as the original
   const stalled = feedHealth(snapshot, {connected: true}, Date.parse(at) + 16000);
   assert.equal(headline(cached, !stalled.connected, items).paused, true);
 });
+
+test('dated breadth can describe the preopen review and expires as live evidence when trading starts', () => {
+  const time = '2026-11-18T15:00:00+08:00';
+  const equity = {root:'IM', phase:'盘前', market:{name:'中证1000'}};
+  const snapshot = {mode:'live', state:{server_time:'2026-11-19T08:30:00+08:00', feed_state:'Wind 已连接', instruments:[equity]},
+    context:{rotation:{breadth_gap:{value:-21.1, time}}}, bars:{}};
+  const review = headline(snapshot);
+  assert.equal(review.phase, '盘前');
+  assert.match(review.title, /大盘广度占优/);
+  equity.phase = '交易中';
+  snapshot.state.server_time = '2026-11-19T09:30:16+08:00';
+  assert.match(headline(snapshot).title, /风格证据不足/);
+});

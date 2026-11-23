@@ -87,7 +87,7 @@ def test_worker_uses_mac_callbacks_and_keeps_windows_snapshot_path(monkeypatch):
     import sys
     import app.wind_worker as worker
     class Commands:
-        def __init__(self):self.items=iter([dict(id='a',op='option_snapshot',codes=['A']),dict(id='stop',op='stop')])
+        def __init__(self):self.items=iter([dict(id='a',op='option_snapshot',codes=['A'],option_epoch=3),dict(id='stop',op='stop')])
         def get(self,timeout=None):return next(self.items)
         def get_nowait(self):raise queue.Empty
     class SDK(Wind):
@@ -109,4 +109,39 @@ def test_worker_uses_mac_callbacks_and_keeps_windows_snapshot_path(monkeypatch):
         packets=list(responses.queue)
         assert len([p for p in packets if p['type']=='response' and p['id']=='a'])==1
         quote=quotes.get_nowait()
-        assert quote['snapshot'] and set(quote['records']['A'])==set(OPTION_FIELDS.split(','))
+        assert quote['option_epoch']==3 and quote['snapshot'] and set(quote['records']['A'])==set(OPTION_FIELDS.split(','))
+
+
+def test_worker_unsubscribes_all_option_groups_and_keeps_futures(monkeypatch):
+    import sys
+    import app.wind_worker as worker
+
+    class SDK(Wind):
+        def start(self,**kwargs):return SimpleNamespace(ErrorCode=0)
+        def stop(self):pass
+        def wsq(self,codes,fields,func=None):
+            response=result(codes.split(','),fields.split(','))
+            if func:
+                self.calls.append((codes,func))
+                response.RequestID=len(self.calls)
+            return response
+
+    sdk=SDK()
+    cancelled_before_shutdown=[]
+    def sequence():
+        yield dict(id='f',op='subscribe',codes=['F'])
+        yield dict(id='o',op='option_subscribe',codes=[f'O{i}' for i in range(34)],option_epoch=1)
+        yield dict(id='off',op='option_unsubscribe')
+        cancelled_before_shutdown.extend(sdk.cancelled)
+        yield dict(id='stop',op='stop')
+
+    class Commands:
+        def __init__(self):self.commands=sequence()
+        def get(self,timeout):return next(self.commands)
+        def get_nowait(self):raise queue.Empty
+
+    monkeypatch.setitem(sys.modules,'WindPy',SimpleNamespace(w=sdk))
+    responses=queue.Queue()
+    worker.worker_main(Commands(),responses,queue.Queue())
+    assert cancelled_before_shutdown==[2,3] and sdk.cancelled==[2,3,1]
+    assert any(p['type']=='response' and p['id']=='off' and 'error' not in p for p in responses.queue)

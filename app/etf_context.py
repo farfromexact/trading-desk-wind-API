@@ -4,15 +4,22 @@ from __future__ import annotations
 import re
 from datetime import date
 
-from .domain import dt, iso
+from .domain import dt, iso, quote_time
 
 ETF_SAMPLES = {
     'IM': {'code': '512100.SH', 'name': '中证1000ETF', 'manager': '南方'},
     'IF': {'code': '510300.SH', 'name': '沪深300ETF', 'manager': '华泰柏瑞'},
-    'IH': {'code': '510050.SH', 'name': '上证50ETF', 'manager': '华夏'},
+    '创业板': {'code': '159915.SZ', 'name': '创业板ETF', 'manager': '易方达'},
+    '科创50': {'code': '588000.SH', 'name': '科创50ETF', 'manager': '华夏'},
 }
 ETF_CODES = {x['code'] for x in ETF_SAMPLES.values()}
 ETF_FLOW_FIELDS = '最新交易日,交易时间,中文简称,当日主力净流入额'
+# Official terminal mapping: VIND_L2_AMOUNT1/2_IN/OUT = extra-large/large orders.
+ETF_FLOW_COMPONENTS = ('rt_insti_buy_amt', 'rt_insti_sell_amt', 'rt_vip_buy_amt', 'rt_vip_sell_amt')
+ETF_FLOW_CORE_FIELDS = ('rt_date', 'rt_time', *ETF_FLOW_COMPONENTS)
+ETF_ROLLING_FIELD = 'rt_mf_amt_20d'
+ETF_FLOW_WSQ_FIELDS = ','.join((*ETF_FLOW_CORE_FIELDS, ETF_ROLLING_FIELD))
+ETF_FLOW_WSQ_FIELD = 'large_order_net_inflow'
 DAILY_FIELD = 'f_mf_netsubamt'
 DERIVED_DAILY_FIELD = 'share_change_times_nav'
 DAILY_HEADER = '申赎净流入额（元）'
@@ -74,6 +81,31 @@ def flow_records(rows, units, received_at, number):
     received_at = dt(received_at)
     unit_ok = units.get('当日主力净流入额') == '元'
     for row in rows:
+        if row.get('source') == 'WindPy WSQ':
+            code = row.get('code')
+            if code not in ETF_CODES:
+                continue
+            stamp = quote_time(row)
+            reason = ''
+            components = {field:number(row.get(field)) for field in ETF_FLOW_COMPONENTS}
+            if any(units.get(field) != '元' for field in ETF_FLOW_COMPONENTS):
+                reason = '实时资金流金额单位未确认'
+            elif stamp is None or stamp > received_at:
+                reason = '实时资金流源行情时间缺失或异常'
+            elif stamp.date() != received_at.date():
+                reason = 'Wind尚未返回当日实时资金流快照'
+            elif any(value is None or value < 0 for value in components.values()):
+                reason = 'Wind实时大单资金流字段缺失或无效，请核对ETF覆盖与权限'
+            value = None if reason else (components['rt_insti_buy_amt']-components['rt_insti_sell_amt']
+                                         +components['rt_vip_buy_amt']-components['rt_vip_sell_amt'])
+            rolling_total = (number(row.get(ETF_ROLLING_FIELD))
+                             if value is not None and units.get(ETF_ROLLING_FIELD) == '元' else None)
+            result[code] = dict(code=code, value=value, time=iso(stamp) if stamp else None,
+                trading_day=stamp.date().isoformat() if stamp else None, observed_at=iso(received_at),
+                field=ETF_FLOW_WSQ_FIELD, unit='元', frequency='intraday_cumulative',
+                source='WindPy WSQ', reason=reason, components=components, derived=True, rolling_20d_total=rolling_total,
+                time_basis='rt_date/rt_time；行情快照时间，不是资金流逐笔更新时间')
+            continue
         if row.get('source') == 'WindPy WSD':
             code = row.get('code')
             if code not in ETF_CODES:
@@ -84,7 +116,7 @@ def flow_records(rows, units, received_at, number):
             value=number(row.get('value')) if units.get('mfd_inflow_m')=='元' else None
             result[code]=dict(code=code,value=value,time=None,trading_day=day,data_date=day,
                 observed_at=iso(received_at),field='mfd_inflow_m',unit='元',frequency='daily_snapshot',
-                source='WindPy WSD MFD_INFLOW_M',reason='' if value is not None else 'WindPy资金流暂缺',
+                source='WindPy WSD MFD_INFLOW_M',reason='' if value is not None else 'Wind尚未返回该日资金流数值',
                 published_at=None)
             continue
         code = row.get('Wind代码') or row.get('windcode')

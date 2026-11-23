@@ -21,7 +21,9 @@ def update_option_subscriptions(w, desired, groups, callback, check):
     desired=set(desired)
     for codes,ident in list(groups.items()):
         if not codes<=desired:
-            w.cancelRequest(ident)  # official macOS binding returns void
+            cancelled=w.cancelRequest(ident)  # some SDK versions return void
+            if getattr(cancelled,'ErrorCode',0):
+                check(cancelled,'取消期权订阅')
             del groups[codes]
     covered=set().union(*groups) if groups else set()
     added=sorted(desired-covered)
@@ -67,8 +69,11 @@ def worker_main(commands, results, quote_results=None):
     def relay():
         while not done.is_set():
             try:
-                r,channel,received_ms=callbacks.get(timeout=.1)
-                quote_results.put(serialize_quotes(r,channel,received_ms=received_ms))
+                r,channel,received_ms,option_epoch=callbacks.get(timeout=.1)
+                packet=serialize_quotes(r,channel,received_ms=received_ms)
+                if channel=='options':
+                    packet['option_epoch']=option_epoch
+                quote_results.put(packet)
             except queue.Empty:
                 pass
 
@@ -118,7 +123,7 @@ def worker_main(commands, results, quote_results=None):
                         w.cancelRequest(subscriptions['futures'])
                     fields = 'rt_last,rt_bid1,rt_ask1,rt_vol,rt_date,rt_time'
                     codes = ','.join(cmd['codes'])
-                    r = check(w.wsq(codes, fields, func=lambda r: callbacks.put((r,'futures',time.time()*1000))), '订阅')
+                    r = check(w.wsq(codes, fields, func=lambda r: callbacks.put((r,'futures',time.time()*1000,None))), '订阅')
                     subscriptions['futures'] = r.RequestID
                     payload = {'request_id': r.RequestID}
                     quote_results.put(serialize_quotes(check(w.wsq(codes, fields), '快照'),snapshot=True))
@@ -145,11 +150,18 @@ def worker_main(commands, results, quote_results=None):
                     if platform.system()=='Darwin':
                         snapshots.start(cmd)
                         continue
-                    quote_results.put(serialize_quotes(check(w.wsq(','.join(cmd['codes']),OPTION_FIELDS),'期权快照'),'options',True))
+                    packet=serialize_quotes(check(w.wsq(','.join(cmd['codes']),OPTION_FIELDS),'期权快照'),'options',True)
+                    packet['option_epoch']=cmd.get('option_epoch')
+                    quote_results.put(packet)
+                    payload=None
+                elif op == 'option_unsubscribe':
+                    update_option_subscriptions(w,[],option_subscriptions,None,check)
                     payload=None
                 elif op == 'option_subscribe':
+                    def option_callback(result,epoch=cmd.get('option_epoch')):
+                        callbacks.put((result,'options',time.time()*1000,epoch))
                     ids=update_option_subscriptions(w,cmd['codes'],option_subscriptions,
-                        lambda r:callbacks.put((r,'options',time.time()*1000)),check)
+                        option_callback,check)
                     payload={'request_ids':ids}
                 elif op.startswith('option_'):
                     payload=dispatch(w,cmd,check)

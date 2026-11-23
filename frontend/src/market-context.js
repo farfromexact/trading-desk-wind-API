@@ -17,9 +17,9 @@ export function positionMetric(item, connected = true, allowHistorical = false) 
   if (!item?.contract || !finite(item?.quote?.rt_last)) return missing;
   const historical = allowHistorical && item.snapshot_mode === 'historical';
   if (!historical && (!connected || !item.ready || item.phase !== '交易中')) {
-    const closed = connected && item.phase === '已收盘';
-    return {...missing, value:closed?'已收盘':'等待行情',
-      subtitle:closed?`${item.contract.split('.')[0]} · 实时位置在交易时段展示`:`${item.contract.split('.')[0]} · ${item.status || '非交易时段'}`,
+    const paused = connected && ['午休','小节休息','已收盘'].includes(item.phase);
+    return {...missing, value:paused?item.phase:'等待行情',
+      subtitle:paused?`${item.contract.split('.')[0]} · 实时位置在交易时段展示`:`${item.contract.split('.')[0]} · ${item.status || '非交易时段'}`,
       time:item.market_time};
   }
   const price = item.quote.rt_last;
@@ -72,19 +72,21 @@ export function crossRows(context) {
 export function etfRows(context, clock = new Date()) {
   const expected = [{root:'IM',code:'512100.SH',name:'中证1000ETF',manager:'南方'},
     {root:'IF',code:'510300.SH',name:'沪深300ETF',manager:'华泰柏瑞'},
-    {root:'IH',code:'510050.SH',name:'上证50ETF',manager:'华夏'}];
+    {root:'创业板',code:'159915.SZ',name:'创业板ETF',manager:'易方达'},
+    {root:'科创50',code:'588000.SH',name:'科创50ETF',manager:'华夏'}];
   const money = x => finite(x) ? `${signed(x/1e8)}亿` : '—';
   return expected.map(sample => {
     const row = context?.etfs?.find(x=>x.code===sample.code) || {};
     const flow = row.flow || {}, daily = row.daily || {};
     const datedFlow = flow.frequency==='daily_snapshot' && flow.data_date;
-    const flowValid = finite(flow.value) && flow.unit==='元' && (datedFlow || flow.time && flow.frequency==='intraday_cumulative');
+    const flowValid = finite(flow.value) && flow.unit==='元' && flow.time && flow.frequency==='intraday_cumulative';
     const dailyValid = finite(daily.value) && daily.data_date && daily.unit==='元' && daily.frequency==='daily';
     const sourceClock = flow.time ? new Date(flow.time).toLocaleTimeString('en-GB',{timeZone:'Asia/Shanghai',hour12:false}) : '';
-    return {...sample,
+    return {...sample, comparison:row.comparison||{},
       flow:{...flow, value:flowValid?flow.value:null, display:money(flowValid?flow.value:null),
         timeLabel:datedFlow?`数据日 ${flow.data_date}`:flow.time?contextTime(flow.time):'时间未取得',
-        stage:datedFlow?'日频截面':sourceClock>='15:00:00'?'盘后快照':'盘中累计', status:datedFlow?'源更新时间未提供':sourceStatus(flow.time,clock)},
+        stage:datedFlow?'旧日频截面（停用）':sourceClock>='15:00:00'?'收盘累计快照':'日内累计',
+        status:datedFlow?'日频数据不用于日内资金流':flow.reason||sourceStatus(flow.time,clock)},
       daily:{...daily, value:dailyValid?daily.value:null, display:money(dailyValid?daily.value:null),
         dateLabel:daily.data_date?`数据日 ${daily.data_date}`:'数据日未取得'},
     };

@@ -102,6 +102,27 @@ def test_offline_never_queries_and_refresh_has_single_flight_cooldown(tmp_path):
     asyncio.run(check())
 
 
+def test_monitor_choice_survives_restart_and_offline_cannot_enable_it(tmp_path):
+    desk=SimpleNamespace(offline=False,watch={},calendar=set())
+    service=MarketContext(desk,tmp_path)
+    assert not service.monitor
+    service.set_monitor(True)
+    assert MarketContext(desk,tmp_path).monitor
+    offline=MarketContext(SimpleNamespace(offline=True,watch={},calendar=set()),tmp_path)
+    assert not offline.monitor
+    with pytest.raises(ValueError):offline.set_monitor(True)
+    service.set_monitor(False)
+    assert not MarketContext(desk,tmp_path).monitor
+
+
+def test_failed_settings_write_does_not_change_monitor_choice(tmp_path,monkeypatch):
+    service=MarketContext(SimpleNamespace(offline=False,watch={},calendar=set()),tmp_path)
+    def failed(*args,**kwargs):raise OSError('unwritable')
+    monkeypatch.setattr(type(service.settings_path),'write_text',failed)
+    with pytest.raises(ValueError,match='保存失败'):service.set_monitor(True)
+    assert not service.monitor
+
+
 def test_query_failure_keeps_old_source_time(tmp_path):
     class FailedClient:
         async def call(self,*args):raise ValueError('权限不足')
@@ -316,7 +337,7 @@ def test_board_vendor_scope_is_explicit_and_never_claims_index_coverage():
     assert b.breadth_view('000688.SH',dt(stamp))['value'] is None
 
 
-def test_faster_breadth_does_not_double_etf_flow_requests(tmp_path, monkeypatch):
+def test_background_refresh_and_etf_monitor_share_one_fifteen_second_flow_batch(tmp_path, monkeypatch):
     import app.market_context as context
     tick=[100.]
     monkeypatch.setattr(context, 'time', SimpleNamespace(monotonic=lambda:tick[0]))
@@ -328,21 +349,29 @@ def test_faster_breadth_does_not_double_etf_flow_requests(tmp_path, monkeypatch)
     service=MarketContext(SimpleNamespace(offline=False,watch={},calendar=set()),tmp_path,client=Client())
     async def run():
         assert service.snapshot()['interval_seconds']==30
+        assert service.snapshot()['etf_interval_seconds']==15
         assert service.request_refresh()
         await service.task
-        tick[0]+=29
+        tick[0]+=14
+        await service.refresh_etf_monitor(service.query)
+        assert calls.count('get_fund_price_indicators')==1
+        tick[0]+=1
+        await service.refresh_etf_monitor(service.query)
+        assert calls.count('get_fund_price_indicators')==2
+        tick[0]+=14
         assert not service.request_refresh()
         tick[0]+=1
         assert service.request_refresh()
         assert not service.request_refresh()  # still single flight
         await service.task
         assert calls.count('get_index_price_indicators')==2
-        assert calls.count('get_fund_price_indicators')==1
+        await service.refresh_etf_monitor(service.query)
+        assert calls.count('get_fund_price_indicators')==3
         tick[0]+=30
         assert service.request_refresh()
         await service.task
         assert calls.count('get_index_price_indicators')==3
-        assert calls.count('get_fund_price_indicators')==2
+        assert calls.count('get_fund_price_indicators')==4
         assert calls.count('fund_get_listed_historical_price')==1
         await service.close()
     asyncio.run(run())

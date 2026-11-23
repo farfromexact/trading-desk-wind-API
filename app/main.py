@@ -83,16 +83,19 @@ async def audit_market_context(request:Request):
     return {'accepted':accepted,**context.snapshot()}
 
 
-class ContextMonitor(BaseModel):
+class MonitorChoice(BaseModel):
     enabled:bool
 
 
 @app.post('/api/market-context/monitor')
-async def context_monitor(body:ContextMonitor,request:Request):
+async def context_monitor(body:MonitorChoice,request:Request):
     context=request.app.state.market_context
     if context.disabled:
         raise HTTPException(400,'离线或已禁用市场背景查询')
-    context.monitor=body.enabled
+    try:
+        context.set_monitor(body.enabled)
+    except ValueError as exc:
+        raise HTTPException(400,str(exc)) from exc
     if body.enabled:
         context.request_refresh()
     return context.snapshot()
@@ -191,6 +194,14 @@ def option_root(request, root):
     if root not in request.app.state.desk.config['watchlist']:
         raise HTTPException(400,'未知监控品种')
     return request.app.state.desk.options
+
+
+@app.post('/api/options/monitor')
+async def option_monitor(body:MonitorChoice,request:Request):
+    try:
+        return request.app.state.desk.options.set_monitor(body.enabled)
+    except ValueError as exc:
+        raise HTTPException(400,str(exc)) from exc
 
 
 @app.get('/api/options/context')
