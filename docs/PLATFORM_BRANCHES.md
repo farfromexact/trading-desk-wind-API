@@ -84,6 +84,20 @@ git merge --ff-only origin/codex/shared-desk-panel
 
 打开 8765，检查顶部解说、八个品种和点击切换主图，盘中确认行情持续更新。若 Windows 稳定分支已产生新提交而无法快进，先比较两边的差异，在临时分支接入共享界面。Windows 实机验收后再从 Windows 发布到 `codex/windows-stable`，之后继续按日常流程 pull。
 
+### Windows 接收 11 月 23 日的刷新修复
+
+共享提交 `b748345` 修复了前台报价停更时页面仍显示在线的问题，并按合约和周期增量更新 K 线。独立提交 `7df1f61` 让 ETF 收盘后取得的当日快照也能显示滚动均额。两个补丁均已对 Windows 稳定提交 `31e749c` 做过源码适用性检查，可分别接收。
+
+在 Windows 上先检查并保存当前工作。以最新远端稳定版开始时，在 PowerShell 执行以下命令。如果 Windows 有待保留的本地提交，建临时分支时选用包含这些提交的本地版本。
+
+```powershell
+git fetch origin
+git switch -c codex/windows-review-refresh-20261123 origin/codex/windows-stable
+git cherry-pick b748345
+```
+
+若也要接收盘后 ETF 修正，在同一临时分支执行 `git cherry-pick 7df1f61`。按 Windows 更新流程重建前端并启动 8765。Mac Chrome 已用历史行情回放验证前台静默恢复、冻结标签页唤醒和连续 60 秒报价。Windows 实机验收时，观察日盘报价在前台持续更新、切回标签后行情时间追上，以及补读事件时历史确认保持静默，再由 Windows 发布。
+
 ## 文档与本机文件
 
 - README、AGENTS 和本文件都说明分支规则，后续接手必须先读当前分支中的版本。
