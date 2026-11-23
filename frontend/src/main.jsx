@@ -3,7 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { CandlestickSeries, createChart, createSeriesMarkers, LineStyle } from 'lightweight-charts';
 import './style.css';
 import { opportunityAtmosphere } from './opportunity-atmosphere';
-import { mergeChartBars, followLatestRange, structureMarkers, spaceMarkerLabels } from './chart-data';
+import { mergeChartBars, updateChartCandles, followLatestRange, structureMarkers, spaceMarkerLabels } from './chart-data';
 
 import { contractRoot, shortContract, formatPrice, formatNumber, currentOpportunity } from './market-format';
 import {OptionsEnvironment,OptionsWorkbench,OptionsDetails} from './options';
@@ -13,10 +13,12 @@ import {MarketBrief} from './market-brief.jsx';
 import {MarketCardGrid} from '../shared/market-cards.jsx';
 import {CARD_TREND_BARS, contracts as marketContracts} from '../shared/market-model.js';
 import {useCardBars} from './use-card-bars.js';
+import {listenToDesk, mergeDeskEvents} from './desk-stream.js';
 import './desk-layout.css';
 const time = x => x ? new Date(x).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}) : '—';
 const fullTime = x => x ? new Date(x).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}) : '—';
 const epoch = x => Math.floor(new Date(x).getTime()/1000);
+const EMPTY_BARS = [];
 const names={watching:'关注中',confirmed:'收盘确认',triggered:'已触价',invalidated:'已失效',expired:'已过期',filtered:'空间不足',uncertain:'先后不确定'};
 const setups={pullback:'顺势突破回踩',failed_break:'假突破反转'};
 
@@ -31,33 +33,37 @@ function useFeed(onAlert,preview=false){
   const [clock,setClock]=useState(Date.now);
   const callback=useRef(onAlert); callback.current=onAlert;
   useEffect(()=>{
-    let active=true,lastMetric=0,firstPacket=true,lastPacketAt=0; const measuredQuotes=new Map(),measuredOptions=new Map();
-    api('state').then(s=>active&&!lastPacketAt&&setState(s)).catch(()=>{});
-    api('events?limit=300').then(e=>active&&setEvents(e)).catch(()=>{});
-    if(preview)return()=>{active=false;};
-    const source=new EventSource('/api/stream');
-    // Keep freshness advancing if the stream stalls without an error event.
-    const timer=setInterval(()=>{
-      const now=Date.now();
-      if(now-lastPacketAt>=1000)setClock(now);
-    },1000);
-    source.addEventListener('update',event=>{
-      if(!active)return;
-      const packet=JSON.parse(event.data);lastPacketAt=Date.now();setClock(lastPacketAt);setConnected(true);setState(packet.state);
+    let active=true,hasStreamState=false,lastMetric=0,metricFrame,retryHistoryAt=Infinity;
+    const measuredQuotes=new Map(),measuredOptions=new Map();
+    api('state').then(s=>active&&!hasStreamState&&setState(s)).catch(()=>{});
+    function readHistory(limit=300){
+      retryHistoryAt=Infinity;
+      api('events?limit='+limit).then(rows=>{
+        if(active)setEvents(old=>mergeDeskEvents(old,rows));
+      }).catch(()=>{retryHistoryAt=Date.now()+5000;});
+    }
+    if(preview){readHistory();return()=>{active=false;};}
+    // An ordinary first packet loads history. Keep the log available when only
+    // the streaming endpoint is slow on the initial visit.
+    const historyFallback=setTimeout(()=>{if(!hasStreamState)readHistory();},2000);
+    function onPacket(packet,firstPacket,now){
+      if(firstPacket||now>=retryHistoryAt)readHistory(hasStreamState?500:300);
+      hasStreamState=true;setClock(now);setConnected(true);setState(packet.state);
       if(packet.events.length){
-        setEvents(old=>{const map=new Map([...old,...packet.events].map(x=>[x.id,x]));return [...map.values()].sort((a,b)=>b.seq-a.seq).slice(0,500);});
+        setEvents(old=>mergeDeskEvents(old,packet.events));
         packet.events.filter(x=>x.audible).forEach(x=>callback.current(x));
       }
       const arrivals=packet.state.instruments.filter(x=>x.quote.received_ms&&x.quote.received_ms!==measuredQuotes.get(x.contract)).map(x=>{measuredQuotes.set(x.contract,x.quote.received_ms);return x.quote.received_ms;});
       const optionArrivals=Object.entries(packet.state.options?.quotes||{}).filter(([code,q])=>q.received_ms&&q.received_ms!==measuredOptions.get(code)).map(([code,q])=>{measuredOptions.set(code,q.received_ms);return q.received_ms;});
       if(!firstPacket && Date.now()-lastMetric>900 && !document.hidden){
         lastMetric=Date.now();
-        requestAnimationFrame(()=>api('telemetry',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delay_ms:Math.max(0,Date.now()-packet.state.sent_ms),source_delay_ms:arrivals.length?Math.max(0,Date.now()-Math.min(...arrivals)):null,option_delay_ms:optionArrivals.length?Math.max(0,Date.now()-Math.min(...optionArrivals)):null})}).catch(()=>{}));
+        metricFrame=requestAnimationFrame(()=>api('telemetry',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delay_ms:Math.max(0,Date.now()-packet.state.sent_ms),source_delay_ms:arrivals.length?Math.max(0,Date.now()-Math.min(...arrivals)):null,option_delay_ms:optionArrivals.length?Math.max(0,Date.now()-Math.min(...optionArrivals)):null})}).catch(()=>{}));
       }
-      firstPacket=false;
-    });
-    source.onerror=()=>{setConnected(false);firstPacket=true;};
-    return()=>{active=false;source.close();clearInterval(timer);};
+    }
+    const stop=listenToDesk({onPacket,onDisconnected:()=>setConnected(false),onClock:setClock});
+    const onVisibility=()=>{if(document.hidden)cancelAnimationFrame(metricFrame);};
+    document.addEventListener('visibilitychange',onVisibility);
+    return()=>{active=false;clearTimeout(historyFallback);stop();document.removeEventListener('visibilitychange',onVisibility);cancelAnimationFrame(metricFrame);};
   },[preview]);
   function applyOptionsMonitor(monitor){
     setState(current=>{
@@ -75,13 +81,13 @@ function useFeed(onAlert,preview=false){
 
 function Chart({contract,market,tf,bars,levels,structures,quote,op,focus,focusTime,provisional,onLatest,preview=false}){
   const element=useRef(), chart=useRef(), series=useRef(),markers=useRef(), lines=useRef([]),initial=useRef(true),focusApplied=useRef(null);
-  const previousCount=useRef(0);
+  const previousBars=useRef(EMPTY_BARS);
   const fullMarkers=useRef([]),markerTimes=useRef([]),refreshMarkerLabels=useRef(null);
   const [hoverStructure,setHoverStructure]=useState('');
   const displayBars=useMemo(()=>mergeChartBars(bars,bars.length?provisional:[]),[bars,provisional]);
   useEffect(()=>{
     initial.current=true;
-    previousCount.current=0;
+    previousBars.current=EMPTY_BARS;
     focusApplied.current=null;
     const c=createChart(element.current,{
       autoSize:true,height:465,
@@ -96,23 +102,30 @@ function Chart({contract,market,tf,bars,levels,structures,quote,op,focus,focusTi
     const s=c.addSeries(CandlestickSeries,{upColor:'#ec746d',downColor:'#56bca7',borderUpColor:'#ec746d',borderDownColor:'#56bca7',wickUpColor:'#ec746d',wickDownColor:'#56bca7',priceFormat:{type:'price',precision:market?.decimals??1,minMove:market?.tick_size??.2},lastValueVisible:false,priceLineVisible:false});
     chart.current=c;series.current=s;markers.current=createSeriesMarkers(s,[]);lines.current=[];
     fullMarkers.current=[];markerTimes.current=[];setHoverStructure('');
-    refreshMarkerLabels.current=()=>markers.current?.setMarkers(spaceMarkerLabels(fullMarkers.current,markerTimes.current,c.timeScale().getVisibleLogicalRange(),Math.max(1,element.current.clientWidth-75)));
+    let lastLabels;
+    refreshMarkerLabels.current=()=>{
+      const visible=spaceMarkerLabels(fullMarkers.current,markerTimes.current,c.timeScale().getVisibleLogicalRange(),Math.max(1,element.current.clientWidth-75));
+      const key=JSON.stringify(visible);
+      if(key!==lastLabels){lastLabels=key;markers.current.setMarkers(visible);}
+    };
     c.timeScale().subscribeVisibleLogicalRangeChange(()=>refreshMarkerLabels.current?.());
     c.subscribeCrosshairMove(param=>setHoverStructure(fullMarkers.current.filter(p=>p.time===param.time).map(p=>p.text).join(' · ')));
-    return()=>{c.remove();chart.current=null;series.current=null;};
+    return()=>{refreshMarkerLabels.current=null;c.remove();chart.current=null;series.current=null;};
   },[contract,tf,market?.decimals,market?.tick_size]);
   useEffect(()=>{
-    if(!series.current || !bars.length)return;
-    const data=displayBars.map(b=>({time:epoch(b.end),open:b.open,high:b.high,low:b.low,close:b.close,...(b.provisional?{color:b.close>=b.open?'rgba(236,116,109,.35)':'rgba(86,188,167,.35)',borderColor:'#e0bd79',wickColor:'#e0bd79'}:{})}));
-    const follow=followLatestRange(chart.current.timeScale().getVisibleLogicalRange(),previousCount.current,data.length);
-    series.current.setData(data);
-    if(initial.current){chart.current.timeScale().setVisibleLogicalRange({from:Math.max(0,data.length-85),to:data.length+6});initial.current=false;}
-    else if(follow&&data.length!==previousCount.current)chart.current.timeScale().setVisibleLogicalRange(follow);
-    previousCount.current=data.length;
-  },[displayBars,contract,tf]);
+    if(!series.current)return;
+    const previous=previousBars.current;
+    const count=displayBars.length;
+    const scale=chart.current.timeScale();
+    const follow=count!==previous.length && followLatestRange(scale.getVisibleLogicalRange(),previous.length,count);
+    updateChartCandles(series.current,previous,displayBars);
+    previousBars.current=displayBars;
+    if(!count){initial.current=true;return;}
+    if(initial.current){scale.setVisibleLogicalRange({from:Math.max(0,count-85),to:count+6});initial.current=false;}
+    else if(follow)scale.setVisibleLogicalRange(follow);
+  },[displayBars,contract,tf,market?.decimals,market?.tick_size]);
   useEffect(()=>{
     if(!series.current)return;
-    lines.current.forEach(line=>series.current.removePriceLine(line));lines.current=[];
     const list=[];
     const current=quote?.rt_last||bars.at(-1)?.close;
     const levelStyles={
@@ -136,13 +149,24 @@ function Chart({contract,market,tf,bars,levels,structures,quote,op,focus,focusTi
       op.targets.forEach((t,i)=>list.push({price:t.price,color:'#6aa99e',title:'T'+(i+1),lineWidth:1,lineStyle:LineStyle.Dashed,axisLabelVisible:true}));
     }
     if(current>0)list.push({price:current,color:'#b6c4d4',title:quote?.rt_last>0?'现价':'收盘',lineWidth:1,lineStyle:LineStyle.Dotted,axisLabelVisible:true});
-    for(const line of list)lines.current.push(series.current.createPriceLine(line));
+    list.forEach((options,i)=>{
+      const old=lines.current[i];
+      if(!old)lines.current.push({line:series.current.createPriceLine(options),options});
+      else if(old.options.price!==options.price || old.options.title!==options.title){
+        old.line.applyOptions(options);
+        old.options=options;
+      }
+    });
+    for(const old of lines.current.splice(list.length))series.current.removePriceLine(old.line);
+  },[contract,tf,market?.decimals,market?.tick_size,levels,quote?.rt_last,op,bars]);
+  useEffect(()=>{
+    if(!series.current)return;
     const points=structureMarkers(structures,displayBars,tf);
     for(const b of displayBars.filter(b=>b.provisional))points.push({time:epoch(b.end),position:'aboveBar',color:'#e0bd79',shape:'circle',size:.5,text:b.forming?'未收盘':'待核对'});
     fullMarkers.current=points.sort((a,b)=>a.time-b.time);
     markerTimes.current=displayBars.map(b=>epoch(b.end));
     refreshMarkerLabels.current?.();
-  },[levels,structures,quote,op,bars,tf,displayBars]);
+  },[contract,tf,market?.decimals,market?.tick_size,structures,displayBars]);
   useEffect(()=>{
     const focusKey=focusTime||focus;
     if(!focusKey||!bars.length||!chart.current||focusApplied.current===focusKey)return;
@@ -183,7 +207,7 @@ function ReplayDialog({contract,market,onClose}){
 
 export function App({preview=false}){
   const [sound,setSound]=useState(false),soundRef=useRef(false),audio=useRef(null),[notice,setNotice]=useState('');
-  const [root,setRoot]=useState('IM'),[tf,setTf]=useState(5),[bars,setBars]=useState([]),[selectedOp,setSelectedOp]=useState(null),[focus,setFocus]=useState(0);
+  const [root,setRoot]=useState('IM'),[tf,setTf]=useState(5),[chartHistory,setChartHistory]=useState(null),[selectedOp,setSelectedOp]=useState(null),[focus,setFocus]=useState(0);
   const [edit,setEdit]=useState(false),[choice,setChoice]=useState(''),[busy,setBusy]=useState(false),[logFilter,setLogFilter]=useState('today'),[history,setHistory]=useState(preview);
   const [replayOpen,setReplayOpen]=useState(false),replayRef=useRef(false);
   const [optionsOpen,setOptionsOpen]=useState(false);
@@ -235,6 +259,7 @@ export function App({preview=false}){
 
   const item=state?.instruments.find(x=>x.root===root);
   const contract=item?.contract||root;
+  const bars=chartHistory?.contract===contract&&chartHistory.tf===tf?chartHistory.rows:EMPTY_BARS;
   const {bars: cardBars, remember: rememberCardBars} = useCardBars(state?.instruments, tf === 5 ? item?.contract : null, preview, api);
   const context = marketContext.error ? {...marketContext.context, error: marketContext.error} : marketContext.context || {};
   const snapshot = state && {state, context, bars: cardBars, mode: preview ? 'preview' : 'live',
@@ -253,17 +278,27 @@ export function App({preview=false}){
   },[contract,tf,replayOpen,item?.contract,preview]);
   const liveBars=(item?.live_bars?.[tf]||[]).filter(b=>b.end>(bars.at(-1)?.end||''));
   const liveBar=liveBars.at(-1);
+  const chartVersion=item?.bar_versions?.[tf]??state?.metrics.bar_batches;
+  const lastFive=tf===5?item?.last_bar:null;
   useEffect(()=>{
-    let alive=true;
-    if(!item?.contract)return;
-    api('bars?contract='+encodeURIComponent(contract)+'&timeframe='+tf).then(rows=>{
-      if (!alive) return;
-      setBars(rows);
-      if (tf === 5) rememberCardBars(item, rows);
-    }).catch(e=>alive&&setNotice(e.message));
-    return()=>{alive=false;};
-  },[contract,tf,item?.trading_day,item?.last_bar,state?.metrics.bar_batches,state?.bootstrap_remaining,rememberCardBars]);
-  useEffect(()=>{setBars([]);},[contract,tf]);
+    if(!item?.contract||(!preview&&!connected))return;
+    const controller=new AbortController();
+    let retry;
+    async function read(){
+      try{
+        const rows=await api('bars?contract='+encodeURIComponent(contract)+'&timeframe='+tf,{signal:controller.signal});
+        if(controller.signal.aborted)return;
+        setChartHistory({contract,tf,rows});
+        if(tf===5)rememberCardBars(item,rows);
+      }catch(e){
+        if(controller.signal.aborted)return;
+        setNotice(e.message);
+        if(!preview)retry=setTimeout(read,5000);
+      }
+    }
+    read();
+    return()=>{controller.abort();clearTimeout(retry);};
+  },[contract,tf,item?.trading_day,chartVersion,lastFive,state?.metrics.started_at,connected,preview,rememberCardBars]);
   const rank={confirmed:0,triggered:1,watching:2,filtered:3,uncertain:4,invalidated:5,expired:6};
   const ops=(state?.instruments.flatMap(x=>x.opportunities)||[]).filter(o=>(!preview||o.trading_day===state.preview_day)&&(history||currentOpportunity(o,state?.instruments.find(x=>x.contract===o.contract))&&['watching','confirmed','triggered','filtered'].includes(o.status))).sort((a,b)=>(rank[a.status]-rank[b.status])||b.signal_bar.localeCompare(a.signal_bar)).slice(0,history?30:8);
   const logs=events.filter(e=>e.kind!=='pivot'&&(logFilter==='all'||(e.known_at||'').slice(0,10)===today)).slice(0,80);

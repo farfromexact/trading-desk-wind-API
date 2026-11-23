@@ -215,13 +215,13 @@ class Desk:
         self.feed_state='Wind 已连接 · 分品种同步中'
         self.finish_bootstrap()
 
-    def available_bars(self, code, tf):
+    def available_bars(self, code, tf, after=None):
         if not valid_contract(code):
             return []
         dates=self.history_dates(code)
         cal=self.calendar_for(code)
         allowed=set(dates)
-        return [b for b in self.store.bars(code,tf) if trading_day(b.end,code,cal) in allowed and completed_bar(b,now(),self.config['bar_grace_seconds'],cal)]
+        return [b for b in self.store.bars(code,tf,after=after) if trading_day(b.end,code,cal) in allowed and completed_bar(b,now(),self.config['bar_grace_seconds'],cal)]
 
     def rebuild(self, code):
         self.gap_cache.clear()
@@ -297,7 +297,7 @@ class Desk:
                 continue
             latest5=engine.bars[-1].end if engine.bars else ''
             latest15=engine.context[-1].end if engine.context else ''
-            pending=[b for b in self.available_bars(code,5) if b.end>latest5]+[b for b in self.available_bars(code,15) if b.end>latest15]
+            pending=self.available_bars(code,5,after=latest5)+self.available_bars(code,15,after=latest15)
             # Recovery after a missed cycle is replay-only. Ordinary updates must be recent.
             recovery=any((now()-bar_finished_at(b)).total_seconds()>95 for b in pending if b.timeframe==5)
             for b in sorted(pending,key=lambda b:(b.end,-b.timeframe)):
@@ -632,6 +632,7 @@ class Desk:
             status,ready=self.health(code) if code else (self.root_errors.get(root,'等待主力映射'),False)
             instruments.append(dict(root=root,contract=code,market=spec,trading_day=self.current_day(root),quote=q,market_time=iso(stamp) if stamp else None,
                                     phase=session(now(),self.calendar_for(root),code or root),
+                                    bar_versions={tf:self.store.bar_versions.get((code,tf),0) for tf in (1,5,15)},
                                     live_bars=self.preview.snapshot(code,now()) if code else {},
                                     age_seconds=round((now()-stamp).total_seconds(),1) if stamp else None,
                                     status=status,ready=ready,**(engine.snapshot() if engine else {'regime':{'state':'warming','label':'数据预热'},'note':'正在加载真实行情','levels':[],'structures':[],'opportunities':[]})))
