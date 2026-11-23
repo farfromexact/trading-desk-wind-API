@@ -76,6 +76,18 @@ def test_rolling_mean_uses_vendor_total_independently_of_observed_days_and_daily
         assert result['rolling_20d_mean'] is result['rolling_20d_excess'] is None
 
 
+def test_after_close_wsq_total_is_usable_without_creating_an_intraday_observation():
+    history = EtfFlowHistory()
+    history.record(point(DAY, '14:55:00', 70))
+    history.record(point(DAYS[-1], '15:00:00', 95))
+    current = point(DAY, '15:30:48', 150) | {'rolling_20d_total': 2000}
+    history.record(current)
+    result = history.compare(CODE, current, dt(DAY+'T18:00:00'), DAYS, {})
+    assert (result['rolling_20d_mean'], result['rolling_20d_excess']) == (100, 50)
+    assert result['days'] == 0 and result['speed'] is result['sample_mean'] is None
+    assert history.days[CODE][DAY] == [(14*3600+55*60, 70)]
+
+
 def test_restore_reuses_archived_wsq_receipts_including_closing_minutes(tmp_path, monkeypatch):
     at = dt(DAY+'T12:05:00')
     monkeypatch.setattr('app.market_context.now', lambda: at)
