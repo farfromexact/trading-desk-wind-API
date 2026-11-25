@@ -98,6 +98,20 @@ git cherry-pick b748345
 
 若也要接收盘后 ETF 修正，在同一临时分支执行 `git cherry-pick 7df1f61`。按 Windows 更新流程重建前端并启动 8765。Mac Chrome 已用历史行情回放验证前台静默恢复、冻结标签页唤醒和连续 60 秒报价。Windows 实机验收时，观察日盘报价在前台持续更新、切回标签后行情时间追上，以及补读事件时历史确认保持静默，再由 Windows 发布。
 
+### Windows 接收 11 月 25 日的盘中行动提示
+
+共享提交 `ea569ab` 把“盘中行动提示”放在“盘中解说”和品种卡片之间，用已有行情显示当前品种、机会阶段和下一步。休市时也可以点“看示例”查看六种场景。
+
+在 Windows 仓库用 `git status` 确认本地工作已保存，执行 `git fetch origin`。从当前远端 Windows 基线 `31e749c` 接收时，按以下顺序操作。如果本地稳定分支有待保留的提交，建临时分支时以该本地分支为起点。如果已经接入 `b748345` 或等效的刷新修复，直接接收 `ea569ab`。
+
+```powershell
+git switch -c codex/windows-review-guidance-20261125 origin/codex/windows-stable
+git cherry-pick b748345
+git cherry-pick ea569ab
+```
+
+在 Mac 上已将这两个补丁依序应用到 `31e749c` 的源码，涉及的 11 个前端文件与共享版本逐一一致。Windows 实机验收时，留在临时分支，依次运行 `.\stop.ps1`、`.\install.ps1`、`.\start.ps1`，打开 8765。确认左上方“看示例”能切换“关注中”“待触价”“已触价”，按 Esc 能回到实盘，再验证盘中报价与提示持续更新。从 Windows 发布验收过的版本。
+
 ## 文档与本机文件
 
 - README、AGENTS 和本文件都说明分支规则，后续接手必须先读当前分支中的版本。
