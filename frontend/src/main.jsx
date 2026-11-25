@@ -2,7 +2,8 @@ import { OpportunityEvidence } from './opportunity-evidence.jsx';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { CandlestickSeries, createChart, createSeriesMarkers, LineStyle } from 'lightweight-charts';
 import './style.css';
-import { opportunityAtmosphere } from './opportunity-atmosphere';
+import {deskGuidance, quoteReady} from './desk-guidance.js';
+import {GuidanceStrip, GuidanceExampleDialog, exampleGuide, useAwaySummary} from './desk-guidance.jsx';
 import { mergeChartBars, updateChartCandles, followLatestRange, structureMarkers, spaceMarkerLabels } from './chart-data';
 
 import { contractRoot, shortContract, formatPrice, formatNumber, currentOpportunity } from './market-format';
@@ -183,11 +184,14 @@ function Opportunity({op,market,selected,onClick,last,tone}){
   const number=x=>formatNumber(x,spec);
   const unit=market?.unit||op.price_unit||'点';
   const direction=op.direction===1?'多':'空';
+  let timing = names[op.status];
+  if (op.status === 'confirmed' && Number.isInteger(op.remaining_bars)) timing = `还剩 ${op.remaining_bars} 根完整5分钟线`;
+  if (op.status === 'triggered') timing = op.touch_at ? `触价 ${time(op.touch_at)}` : '触价时点未记录';
   return <button className={'op-card '+(selected?'selected ':'')+op.status+(tone?' signal-'+tone:'')} onClick={onClick}>
     <div className="op-head"><span className={'direction '+(op.direction===1?'up':'down')}>{direction}</span><b>{shortContract(op.contract)}</b><span className={'badge '+op.status}>{names[op.status]}</span></div>
     <div className="op-name">{setups[op.setup]}{op.historical&&<span className="tiny">历史 · 静默</span>}</div>
     <p>{op.reason}</p>
-    {op.entry?<><div className="op-prices"><div><small>触发价</small><b>{price(op.entry)}</b></div><div><small>失效价</small><b>{price(op.stop)}</b></div><div><small>T1 {op.target_source==='synthetic'?'测算':'空间'}</small><b className={op.rr>=1.5&&op.target_source!=='synthetic'?'accent':'amber'}>{op.rr?.toFixed(2)}R</b></div></div><div className="op-targets">{op.targets.map((t,i)=><span key={i}>T{i+1} <b>{price(t.price)}</b><small>{t.label}</small></span>)}</div><div className="op-foot"><span>止损距 {number(op.risk)} {unit}</span><span>距触发 {last>0?number(Math.abs(last-op.entry)):'—'} {unit}</span></div><div className="op-foot"><span>确认 {time(op.confirmed_at)}</span><span>{op.remaining_bars??0} 根内有效</span></div></>:<div className="op-foot"><span>关键位 {price(op.level)}</span><span>{op.near?'已接近区域':'等待价格接近'}</span></div>}
+    {op.entry?<><div className="op-prices"><div><small>触发价</small><b>{price(op.entry)}</b></div><div><small>失效价</small><b>{price(op.stop)}</b></div><div><small>T1 {op.target_source==='synthetic'?'测算':'空间'}</small><b className={op.rr>=1.5&&op.target_source!=='synthetic'?'accent':'amber'}>{op.rr?.toFixed(2)}R</b></div></div><div className="op-targets">{op.targets.map((t,i)=><span key={i}>T{i+1} <b>{price(t.price)}</b><small>{t.label}</small></span>)}</div><div className="op-foot"><span>止损距 {number(op.risk)} {unit}</span><span>距触发 {last>0?number(Math.abs(last-op.entry)):'—'} {unit}</span></div><div className="op-foot"><span>确认 {time(op.confirmed_at)}</span><span>{timing}</span></div></>:<div className="op-foot"><span>关键位 {price(op.level)}</span><span>{op.near?'已接近区域':'等待价格接近'}</span></div>}
   </button>;
 }
 
@@ -252,10 +256,17 @@ export function App({preview=false}){
     const timer=setTimeout(()=>setAtmospherePreview(null),30000);
     return()=>clearTimeout(timer);
   },[atmospherePreview]);
-  const atmosphere=opportunityAtmosphere(state,connected,replayOpen);
-  const atmosphereTone=atmospherePreview||atmosphere.tone;
-  const atmosphereSignals=atmosphereTone==='action'?atmosphere.actionable:atmosphere.watching;
-  const atmosphereRoots=[...new Set(atmosphereSignals.map(x=>x.root))].join(' · ');
+  const guide=useMemo(()=>deskGuidance(state,connected,clock,preview||replayOpen),[state,connected,clock,preview,replayOpen]);
+  const recap=useAwaySummary(state,guide.live,preview||replayOpen||Boolean(state?.offline)||Boolean(atmospherePreview));
+  const atmosphere=guide.atmosphere;
+  const previewPlans=useRef(null);
+  useEffect(()=>{
+    if(!atmospherePreview){previewPlans.current=null;return;}
+    const keys=atmosphere.actionable.map(op=>op.id+'|'+op.status);
+    if(previewPlans.current && keys.some(key=>!previewPlans.current.has(key)))setAtmospherePreview(null);
+    previewPlans.current=new Set(keys);
+  },[atmospherePreview,atmosphere]);
+  const atmosphereTone=atmospherePreview && atmosphere.tone==='idle' ? exampleGuide(atmospherePreview).atmosphere.tone : atmosphere.tone;
 
   const item=state?.instruments.find(x=>x.root===root);
   const contract=item?.contract||root;
@@ -315,12 +326,7 @@ export function App({preview=false}){
       <span className="desk-clock">{fullTime(state?.server_time)} <span className="muted">上海</span></span>
     </div>
     {(!connected||state?.last_error||notice||state?.offline)&&<div className="banner">{notice||state?.last_error||(preview?'21:9 分支布局预览 · 11月13日历史样本，商品含随后夜盘；各自时间保留，未载入盘口保持缺失，全部提醒静默':state?.offline?'离线回放模式 · 所有提醒保持静默':'页面与服务连接中断，等待恢复')} {notice&&<button onClick={()=>setNotice('')}>关闭</button>}</div>}
-    {atmosphereTone!=='idle'&&<div className={'atmosphere-status '+(atmospherePreview?'is-preview':'')} role="status" aria-live="polite">
-      <span className="atmosphere-beacon" aria-hidden="true"/>
-      <div><span className="atmosphere-eyebrow">{atmospherePreview?'灯效预览 · 30秒后恢复实时':'全市场机会雷达'}</span><strong>{atmosphereTone==='action'?'已收盘确认 · 关注触发条件':'关注中 · 等待收盘确认'}</strong></div>
-      <span className="atmosphere-detail">{atmospherePreview?'仅预览视觉效果，不代表出现真实机会':atmosphereTone==='action'?`${atmosphereRoots} · ${atmosphere.actionable.filter(x=>x.status==='confirmed').length} 个待触发 / ${atmosphere.actionable.filter(x=>x.status==='triggered').length} 个已触价`:`${atmosphereRoots} · ${atmosphere.watching.length} 个关注机会`}</span>
-      {atmospherePreview&&<button onClick={()=>setAtmospherePreview(null)}>恢复实时</button>}
-    </div>}
+    <GuidanceStrip guide={guide} onSelect={selectOp} onExample={()=>setAtmospherePreview('late')} recap={recap}/>
     <section className="desk-markets" aria-labelledby={cardItems.length ? 'desk-market-heading' : 'desk-title'}>
       <header className="desk-market-heading">
         <div className="brand">
@@ -337,7 +343,7 @@ export function App({preview=false}){
         </div>
       </header>
       {cardItems.length > 0 && <MarketCardGrid items={cardItems} selected={root} showStatus atmosphere={atmosphere}
-        paused={!preview && (!connected || Boolean(state.offline || state.last_error))}
+        paused={!preview && (!connected || state.offline || Boolean(state.last_error && !guide.live))}
         onSelect={next => { setRoot(next); setSelectedOp(null); setEdit(false); }}/>}
     </section>
     <OptionsEnvironment root={root} context={state?.options?.contexts?.[root]} onOpen={()=>setOptionsOpen(true)}
@@ -349,12 +355,13 @@ export function App({preview=false}){
       <div className="chart-stats"><span>{item?.market.name} <b>{item?.market.unit}</b></span><span>背景 <b>15分钟</b></span><span>确认 <b>5分钟收盘</b></span><span>买一 <b>{price(item?.quote.rt_bid1)}</b></span><span>卖一 <b>{price(item?.quote.rt_ask1)}</b></span><span className="right chart-times"><span>已收盘 · {time(bars.at(-1)?.end)}</span>{liveBar&&<span className="live-candle-note" title={liveBar.source==='quotes_only'?'当前仅含已接收报价，等待Wind分钟数据补齐开高低价':'Wind盘中快照及实时报价预览，最终OHLC以收盘数据为准'}>{liveBar.forming?'未收盘':'待核对'} · {time(liveBar.end)}{liveBar.source==='quotes_only'?' · 局部报价':''}</span>}</span></div>
       <Chart contract={contract} market={item?.market} tf={tf} bars={bars} levels={item?.levels} structures={item?.structures} quote={item?.quote} op={currentOp} focus={focus} provisional={liveBars} onLatest={()=>setSelectedOp(null)} preview={preview}/>
       <div className="chart-legend"><span><i className="red"/>上涨</span><span><i className="green"/>下跌</span><span><i className="blue"/>5分钟确认结构</span><span className="live-candle-note">金边K线为盘中预览</span><span className="right">i 内部 / s 波段 · H 高 / L 低 · {tf===5?'确认后回标':'5m标注来自5分钟'}</span></div>
-      {currentOp?<div className="thesis" id="opportunity-detail"><div><span className={'direction '+(currentOp.direction===1?'up':'down')}>{currentOp.direction===1?'多':'空'}</span><h3>{setups[currentOp.setup]}</h3><span className="muted">{names[currentOp.status]}</span></div><p>{currentOp.reason}</p><div className="thesis-grid"><div><small>触发价</small><b>{price(currentOp.entry)}</b></div><div><small>结构失效</small><b>{price(currentOp.stop)}</b></div>{[0,1].map(i=><div key={i}><small>T{i+1} · {currentOp.targets[i]?.label||'待确认'}</small><b>{price(currentOp.targets[i]?.price)}</b></div>)}</div><div className="facts"><span>冻结关键位 {price(currentOp.level)} · {currentOp.level_name}</span><span>止损距离 {number(currentOp.risk)} {item?.market.unit}</span><span>距触发 {currentOp.entry&&item?.quote.rt_last>0?number(Math.abs(item.quote.rt_last-currentOp.entry)):'—'} {item?.market.unit}</span></div><OpportunityEvidence op={currentOp} instrument={item} connected={connected && !state?.offline && !replayOpen}/></div>:<div className="context-box"><div><span className="eyebrow">当前观察</span><h3>{item?.note||'等待行情就绪'}</h3><p>交易日 {item?.trading_day} · 先看15分钟环境，再等5分钟确认。</p></div><div className="context-metrics"><span>效率比<b>{item?.regime.efficiency?.toFixed(2)||'—'}</b></span><span>EMA斜率 / ATR<b>{item?.regime.slope?.toFixed(2)||'—'}</b></span></div></div>}
-    </section><MarketContextPanel source={marketContext} clock={clock} instruments={state?.instruments} connected={connected&&!state?.offline&&!replayOpen} preview={preview} layout="rail"/><aside className="panel opportunity-panel"><div className="panel-head"><h2>{preview?'历史机会':'机会雷达'} <span className="count">{ops.length}</span></h2><button className="text-button" onClick={()=>setHistory(!history)}>{history?'只看当前':'包含历史'}</button></div><div className="aside-hint">{preview?'11月13日规则回放 · 历史静默':'盘中预警 · 收盘确认 · 条件失效'}</div><div className="op-list">{ops.length?ops.map(op=><Opportunity key={op.id} op={op} tone={atmosphere.actionable.some(o=>o.id===op.id)?'action':atmosphere.watching.some(o=>o.id===op.id)?'watch':null} market={state?.instruments.find(x=>x.contract===op.contract)?.market} selected={op.id===selectedOp} last={state?.instruments.find(x=>x.contract===op.contract)?.quote.rt_last} onClick={()=>selectOp(op)}/>):<div className="empty-state"><div className="empty-radar"><i/><i/><i/><b>＋</b></div><h3>{preview?'收盘快照，无当前入场信号':'等待条件完成'}</h3><p>市场状态、结构位置和后续确认一致时，机会会出现在这里。</p><ul>{state?.instruments.map(x=><li key={x.root}><b>{x.root}</b> {x.ready?x.note:x.status}</li>)}</ul></div>}</div><div className="aside-foot"><span className="small-dot"/>{preview?'历史预览 · 全部提醒静默':sound?'新的收盘确认将播放一次声音':'预警静默 · 点击顶部启用确认声音'}</div></aside></main>
+      {currentOp?<div className="thesis" id="opportunity-detail"><div><span className={'direction '+(currentOp.direction===1?'up':'down')}>{currentOp.direction===1?'多':'空'}</span><h3>{setups[currentOp.setup]}</h3><span className="muted">{names[currentOp.status]}</span></div><p>{currentOp.reason}</p><div className="thesis-grid"><div><small>触发价</small><b>{price(currentOp.entry)}</b></div><div><small>结构失效</small><b>{price(currentOp.stop)}</b></div>{[0,1].map(i=><div key={i}><small>T{i+1} · {currentOp.targets[i]?.label||'待确认'}</small><b>{price(currentOp.targets[i]?.price)}</b></div>)}</div><div className="facts"><span>冻结关键位 {price(currentOp.level)} · {currentOp.level_name}</span><span>止损距离 {number(currentOp.risk)} {item?.market.unit}</span><span>距触发 {currentOp.entry&&item?.quote.rt_last>0?number(Math.abs(item.quote.rt_last-currentOp.entry)):'—'} {item?.market.unit}</span></div><OpportunityEvidence op={currentOp} instrument={item} connected={guide.live && quoteReady(item,clock)}/></div>:<div className="context-box"><div><span className="eyebrow">当前观察</span><h3>{item?.note||'等待行情就绪'}</h3><p>交易日 {item?.trading_day} · 先看15分钟环境，再等5分钟确认。</p></div><div className="context-metrics"><span>效率比<b>{item?.regime.efficiency?.toFixed(2)||'—'}</b></span><span>EMA斜率 / ATR<b>{item?.regime.slope?.toFixed(2)||'—'}</b></span></div></div>}
+    </section><MarketContextPanel source={marketContext} clock={clock} instruments={state?.instruments} connected={connected&&!state?.offline&&!replayOpen} preview={preview} layout="rail"/><aside id="opportunity-radar" className="panel opportunity-panel"><div className="panel-head"><h2>{preview?'历史机会':'机会雷达'} <span className="count">{ops.length}</span></h2><button className="text-button" onClick={()=>setHistory(!history)}>{history?'只看当前':'包含历史'}</button></div><div className="aside-hint">{preview?'11月13日规则回放 · 历史静默':'盘中预警 · 收盘确认 · 条件失效'}</div><div className="op-list">{ops.length?ops.map(op=><Opportunity key={op.id} op={op} tone={atmosphere.actionable.some(o=>o.id===op.id)?'action':atmosphere.watching.some(o=>o.id===op.id)?'watch':null} market={state?.instruments.find(x=>x.contract===op.contract)?.market} selected={op.id===selectedOp} last={state?.instruments.find(x=>x.contract===op.contract)?.quote.rt_last} onClick={()=>selectOp(op)}/>):<div className="empty-state"><div className="empty-radar"><i/><i/><i/><b>＋</b></div><h3>{preview?'收盘快照，无当前入场信号':'等待条件完成'}</h3><p>市场状态、结构位置和后续确认一致时，机会会出现在这里。</p><ul>{state?.instruments.map(x=><li key={x.root}><b>{x.root}</b> {x.ready?x.note:x.status}</li>)}</ul></div>}</div><div className="aside-foot"><span className="small-dot"/>{preview?'历史预览 · 全部提醒静默':sound?'新的收盘确认将播放一次声音':'预警静默 · 点击顶部启用确认声音'}</div></aside></main>
     {optionsVisible&&<OptionsWorkbench root={root} opportunityId={currentOp?.id} context={state.options.contexts?.[root]}/>}
     <section className="panel event-panel"><div className="panel-head"><h2>事件记录 <span className="muted">保留当时依据</span></h2><div className="segments"><button className={logFilter==='today'?'active':''} onClick={()=>setLogFilter('today')}>今日</button><button className={logFilter==='all'?'active':''} onClick={()=>setLogFilter('all')}>全部记录</button></div></div><div className="event-scroll"><table><thead><tr><th>确认 / 生成时间</th><th>合约</th><th>事件</th><th>说明</th><th>来源</th></tr></thead><tbody>{logs.length?logs.map(e=><tr key={e.id} onClick={()=>e.opportunity&&selectOp(e.opportunity)} className={e.opportunity?'clickable':''}><td>{logFilter==='all'?fullTime(e.known_at):time(e.known_at)}</td><td>{shortContract(e.contract)||'系统'}</td><td><span className={'badge '+(e.opportunity?.status||'neutral')}>{e.opportunity?names[e.opportunity.status]:({structure:'结构变化',preview:'接近区域',revision:'数据修订',data_error:'数据异常',option_data_error:'期权数据异常',system:'系统状态'}[e.kind]||e.kind)}</span></td><td>{e.message}</td><td className="muted">{e.historical?'历史回放':'实时'}</td></tr>):<tr><td colSpan="5" className="empty-row">尚无事件，等待数据同步</td></tr>}</tbody></table></div></section>
     <div className="replay-entry"><div><b>复核历史，而非推定成交</b><span>保留 Wind 原生K线标签；完整性确认通常晚于标签1分钟。夜盘归入下一交易日；首根15分钟完成前使用上一交易日背景。</span></div><button disabled={preview||!item?.contract} onClick={()=>setReplayOpen(true)}>打开 {root} 历史回放 ↗</button></div>
-    <footer><div className="atmosphere-preview-controls"><span>页面灯效</span><button onClick={()=>setAtmospherePreview('watch')}>预览橙色关注</button><button onClick={()=>setAtmospherePreview('action')}>预览红色确认</button></div><span>{preview?'Wind 历史样本 · 布局预览':'Wind 实时数据 · 本机运行'} · <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">Charts by TradingView</a></span><span>规则 {state?.rules.version||'v1.0'} · 初始规则待验证 · 不展示推定胜率</span></footer>
+    <footer><div className="atmosphere-preview-controls"><span>页面灯效</span><button onClick={()=>setAtmospherePreview('watch')}>预览橙色关注</button><button onClick={()=>setAtmospherePreview('confirmed')}>预览红色确认</button></div><span>{preview?'Wind 历史样本 · 布局预览':'Wind 实时数据 · 本机运行'} · <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">Charts by TradingView</a></span><span>规则 {state?.rules.version||'v1.0'} · 初始规则待验证 · 不展示推定胜率</span></footer>
+    {atmospherePreview&&<GuidanceExampleDialog step={atmospherePreview} onChange={setAtmospherePreview} onClose={()=>setAtmospherePreview(null)}/>}
     {replayOpen&&<ReplayDialog contract={contract} market={item?.market} onClose={()=>setReplayOpen(false)}/>}
     {optionsVisible&&optionsOpen&&<OptionsDetails root={root} liveQuotes={state.options.quotes} contextRevision={state.options.contexts?.[root]?.generated_at} onClose={()=>setOptionsOpen(false)}/>}
   </div>;

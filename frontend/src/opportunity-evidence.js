@@ -3,6 +3,42 @@ import { formatPrice } from './market-format.js';
 const finite = x => typeof x === 'number' && Number.isFinite(x);
 const num = x => finite(x) ? x.toFixed(2) : '未记录';
 const stamp = x => x ? x.replace('T', ' ').replace('+08:00', '') : '未记录';
+
+// The banner and evidence panel use the same book, stop-entry convention and slippage.
+export function opportunityBook(op, instrument, connected) {
+  const d = op.direction, tick = instrument?.market?.tick_size;
+  const {rt_bid1: bid, rt_ask1: ask} = instrument?.quote || {};
+  const target = op.targets?.[0]?.price;
+  if (!connected || !instrument?.ready || instrument.phase !== '交易中' || !op.trading_day ||
+      instrument.contract !== op.contract || instrument.trading_day !== op.trading_day ||
+      op.historical || op.preview_only || !['confirmed', 'triggered'].includes(op.status) ||
+      ![1, -1].includes(d) || ![tick, bid, ask, op.entry, op.stop, target].every(x => finite(x) && x > 0) ||
+      ask < bid || d * (op.entry - op.stop) <= 0 || d * (target - op.entry) <= 0) return null;
+
+  const book = d === 1 ? ask : bid;
+  const base = d === 1 ? Math.max(book, op.entry) : Math.min(book, op.entry);
+  const entry = base + d * tick;
+  const risk = d * (entry - op.stop) + tick;
+  const reward = d * (target - entry) - tick;
+  const rr = reward / risk;
+  const minimum = op.rule_parameters?.minimum_rr;
+  let limit = null, within = null;
+  if ((op.target_source || op.targets[0].source) === 'structural' && finite(minimum) && minimum > 0) {
+    // Solve reward >= minimum * risk for the displayed bid/ask, then round conservatively.
+    const ticks = (target + minimum * op.stop) / (1 + minimum) / tick - d * 2;
+    const index = d === 1 ? Math.floor(ticks + 1e-8) : Math.ceil(ticks - 1e-8);
+    limit = Number((index * tick).toFixed(8));
+    within = d * (base - limit) <= tick * 1e-8;
+  }
+  return {book, entry, rr, minimum, limit, within};
+}
+
+export function formatBookR(book) {
+  const rounded = book.rr.toFixed(2);
+  // The rounded number alone can appear to meet a threshold that the next tradable tick misses.
+  return book.within === false && Number(rounded) >= book.minimum ? `<${book.minimum}` : rounded;
+}
+
 export function opportunityEvidence(op, instrument, connected = true) {
   const p = x => formatPrice(x, instrument?.market || {decimals: op.price_decimals});
   const d = op.direction, long = d === 1, pullback = op.setup === 'pullback';
@@ -41,13 +77,9 @@ export function opportunityEvidence(op, instrument, connected = true) {
   warnings.push(pullback?'失效检查：候选期趋势改变或收盘越过回踩区域不利边界；确认后环境改变取消待触发，触及结构失效价则失效。':'失效检查：候选期离开震荡、未及时收回或下一根无强跟随；确认后环境改变取消待触发，触及结构失效价则失效。');
   warnings.push(op.status==='confirmed'?`最多再等 ${op.remaining_bars ?? '未记录'} 根完整5分钟线；未触发不跨交易日。`:'结构目标触及不代表自动止盈；下单、仓位、退出均需人工处理。');
   let execution = '当前盘口估计不可用：需要实时健康数据、有效双边盘口及确认/触价状态。';
-  const q=instrument?.quote || {}, tick=instrument?.market?.tick_size;
-  if(healthy && ['confirmed','triggered'].includes(op.status) && !op.preview_only && finite(tick) && tick>0 && finite(q.rt_bid1) && finite(q.rt_ask1) && q.rt_bid1>0 && q.rt_ask1>=q.rt_bid1 && finite(op.stop) && finite(op.targets?.[0]?.price)) {
-    const book=long?q.rt_ask1:q.rt_bid1;
-    // Stop-entry opportunity: do not use a favorable pre-trigger book as a fictitious fill.
-    const entry=(long?Math.max(book,op.entry):Math.min(book,op.entry))+d*tick;
-    const risk=d*(entry-op.stop)+tick, reward=d*(op.targets[0].price-entry)-tick;
-    execution=`当前盘口压力估计：参考入场 ${p(entry)}，计入入场和退出各1跳压力滑点，T1空间 ${risk>0?num(reward/risk)+'R':'不可计算'}。基于买入卖一/卖出买一，未触发时不优于计划触发价；未扣手续费、未模拟未来盘口变化。不是可保证成交的RR。`;
+  const book = opportunityBook(op, instrument, connected);
+  if (book) {
+    execution=`当前盘口压力估计：参考入场 ${p(book.entry)}，计入入场和退出各1跳压力滑点，T1空间 ${formatBookR(book)}R。基于买入卖一/卖出买一，未触发时不优于计划触发价；未扣手续费、未模拟未来盘口变化。不是可保证成交的RR。`;
   }
   return {steps,warnings,execution};
 }

@@ -35,6 +35,6 @@ export function MetricHelp({label, children}) {
     {open&&createPortal(<div ref={bubble} id={id} role="tooltip" className="mc-help-bubble" style={position}
       onMouseEnter={()=>setOpen(true)} onMouseLeave={()=>{if(!pinned)setOpen(false);}}>
       <strong>{label}</strong><p>{children}</p><small>点击 ? 固定说明 · 再点、Esc 或点空白处关闭</small>
-    </div>,document.body)}
+    </div>,button.current?.closest('dialog[open]') || document.body)}
   </span>;
 }
