@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import json
 from pathlib import Path
 
 import pytest
@@ -133,3 +134,33 @@ def test_chart_versions_change_only_for_inserted_or_revised_series(tmp_path):
         assert store.bar_versions == {(code, 5): 2, (code, 15): 1}
     finally:
         store.close()
+
+
+def test_chart_cache_observes_grace_revision_calendar_and_clock_rewind(tmp_path, monkeypatch):
+    at = dt('2026-11-23T09:06:04+08:00')
+    monkeypatch.setattr('app.service.now', lambda: at)
+    desk = Desk(tmp_path, offline=True)
+    cal = {'2026-11-20', '2026-11-23'}
+    desk.calendars['INE'] = cal
+    desk.config['history_days'] = 1
+    code = 'SC2701.INE'
+    def bar(label, close=600):
+        return Bar(code, 5, iso(label), 600, 602, 598, close)
+    friday = bar('2026-11-20 21:05')
+    monday = bar('2026-11-23 09:05')
+    try:
+        desk.store.save_bars([friday, monday], iso(at))
+        early = desk.chart_payload(code, 5)
+        assert json.loads(early) == [friday.json()]
+        assert desk.chart_payload(code, 5) is early
+        at += timedelta(seconds=1)
+        assert json.loads(desk.chart_payload(code, 5)) == [friday.json(), monday.json()]
+        revision = bar('2026-11-23 09:05', close=601)
+        desk.store.save_bars([revision], iso(at))
+        assert json.loads(desk.chart_payload(code, 5)) == [friday.json(), revision.json()]
+        at -= timedelta(seconds=1)
+        assert json.loads(desk.chart_payload(code, 5)) == [friday.json()]
+        cal.remove('2026-11-20')
+        assert json.loads(desk.chart_payload(code, 5)) == []
+    finally:
+        desk.stop()

@@ -3,11 +3,21 @@
 Calendar dates are Wind exchange trading dates. Night sessions belong to the
 next trading day, including Friday night / Saturday morning -> Monday.
 """
+from bisect import bisect_left
 from datetime import date, datetime, time, timedelta
 from functools import lru_cache
 import re
 
 from .domain import TZ, dt, iso, load_config
+
+
+@lru_cache(maxsize=32)
+def _ordered_days(calendar):
+    return tuple(sorted(calendar))
+
+
+def ordered_days(calendar):
+    return _ordered_days(frozenset(calendar))
 
 
 @lru_cache(maxsize=1)
@@ -70,19 +80,18 @@ def _windows(day, code, calendar):
 
 
 def trading_windows(day, code, calendar):
-    return _windows(day, code, tuple(sorted(calendar)))
+    return _windows(day, code, ordered_days(calendar))
 
 
 def active_window(at, code, calendar, include_end=False):
     at = dt(at)
     # Nearest future trading day can own the current Friday/Saturday night.
-    days = sorted(calendar)
+    days = ordered_days(calendar)
     today = at.date().isoformat()
-    nearby = [d for d in days if today <= d][:1]
-    if today in calendar and at.hour >= 20:
-        nearby += [d for d in days if d > today][:1]
-    for day in nearby:
-        for start, end in trading_windows(day, code, calendar):
+    first = bisect_left(days, today)
+    count = 2 if today in calendar and at.hour >= 20 else 1
+    for day in days[first:first + count]:
+        for start, end in _windows(day, code, days):
             if start <= at < end or include_end and at == end:
                 return day, start, end
     return None
@@ -143,7 +152,7 @@ def _labels(day, code, timeframe, calendar):
 
 
 def labels(day, code, timeframe, calendar):
-    return _labels(day, code, timeframe, tuple(sorted(calendar)))
+    return _labels(day, code, timeframe, ordered_days(calendar))
 
 
 def label_window(stamp, code, calendar=None):
