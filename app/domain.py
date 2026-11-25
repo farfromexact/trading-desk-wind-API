@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_right
 import hashlib
 import json
 import math
@@ -65,22 +66,25 @@ def expected_end(at: datetime, timeframe: int, calendar: set[str], grace: int = 
     # Completion boundaries are whole seconds. Cache the expensive calendar /
     # native-label search within that second, without moving any boundary.
     cutoff=(dt(at)-timedelta(seconds=grace)).replace(microsecond=0)
-    return _expected_end(cutoff,timeframe,tuple(sorted(calendar)),code)
+    return _expected_end(cutoff,timeframe,frozenset(calendar),code)
 
 
 @lru_cache(maxsize=4096)
 def _expected_end(cutoff, timeframe, calendar, code):
-    from .markets import labels, trading_windows
+    from .markets import labels, ordered_days, trading_windows
     # Option expiries require a longer calendar. Only the nearest future day
     # can own a current night session; don't materialize a year's future windows.
     today=cutoff.date().isoformat()
-    nearest=next((d for d in calendar if d>today),today)
-    for day in sorted((d for d in calendar if d<=nearest), reverse=True):
+    cutoff_label = iso(cutoff)
+    days = ordered_days(calendar)
+    for day in reversed(days[:bisect_right(days, today) + 1]):
         windows=trading_windows(day,code,calendar)
         if not windows or windows[0][0]>cutoff:
             continue
         # The next trading day's night bars can be earlier than its civil date.
-        for label in reversed(labels(day, code, timeframe, calendar)):
+        day_labels = labels(day, code, timeframe, calendar)
+        for index in range(bisect_right(day_labels, cutoff_label) - 1, -1, -1):
+            label = day_labels[index]
             if bar_finished_at(Bar(code,timeframe,label,1,1,1,1), calendar) <= cutoff:
                 return label
     return None

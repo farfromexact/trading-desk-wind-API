@@ -5,12 +5,13 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .domain import ROOT
+from .desk_stream import StreamHistory
 from .service import Desk
 from .replay import build_replay
 from .markets import valid_contract
@@ -21,6 +22,7 @@ from .market_context import MarketContext
 async def lifespan(app):
     desk=Desk(offline=os.environ.get('WIND_DESK_OFFLINE')=='1')
     app.state.desk=desk
+    app.state.stream_history=StreamHistory()
     context=MarketContext(desk)
     app.state.market_context=context
     context_task=asyncio.create_task(context.run())
@@ -106,7 +108,7 @@ async def bars(request:Request,contract:str,timeframe:int=5):
     if timeframe not in (1,5,15):
         raise HTTPException(400,'周期必须是1、5或15分钟')
     desk=request.app.state.desk
-    return [b.json() for b in desk.available_bars(contract,timeframe)]
+    return Response(desk.chart_payload(contract,timeframe),media_type='application/json')
 
 
 class ChartInterest(BaseModel):
@@ -257,17 +259,23 @@ async def option_audit(request:Request,kind:str='evaluation',root:str|None=None,
 
 
 @app.get('/api/stream')
-async def stream(request:Request):
+async def stream(request:Request,compact:bool=False):
     desk=request.app.state.desk
     recent=desk.store.events(1)
     cursor=recent[0]['seq'] if recent else 0
     async def generate():
         nonlocal cursor
+        previous = {}
+        frame = 0
         while desk.running and not await request.is_disconnected():
             rows=desk.store.events(1000,after=cursor)
             if rows:
                 cursor=max(e['seq'] for e in rows)
             payload={'state':desk.snapshot(),'events':list(reversed(rows))}
+            if compact:
+                frame += 1
+                payload['frame'] = frame
+                payload['state'], previous = request.app.state.stream_history.compact(payload['state'], previous)
             yield 'id: '+str(cursor)+'\nevent: update\ndata: '+json.dumps(payload,ensure_ascii=False,allow_nan=False)+'\n\n'
             await asyncio.sleep(1)
     return StreamingResponse(generate(),media_type='text/event-stream',headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})
