@@ -14,7 +14,7 @@ export function MarketBrief({snapshot, items, connected, preview, replay}) {
       const summary = headline(snapshot, false, items);
       label = phaseLabels[summary.phase];
       title = summary.title;
-      subtitle = summary.subtitle;
+      subtitle = summary.marketSubtitle;
       paused = false;
     } else {
       label = '解说暂停';

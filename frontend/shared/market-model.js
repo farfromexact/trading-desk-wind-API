@@ -245,7 +245,7 @@ export function headline(snapshot, disconnected=false, items=contracts(snapshot)
   const commodityLead=leadingDown?lead.market.name+'领跌':allUp?'商品样本普涨':'商品等待确认';
   const title=`${equityLead}，${phase==='盘中'&&commodity.review&&commodity.complete?'商品回顾 · ':''}${commodityLead}。`;
   const subtitle=`${phase==='盘中'&&bonds.review&&bonds.complete?'国债回顾 · ':''}${bondsTitle}。`;
-  return {title,subtitle:subtitle+(radar?`${radar.root} ${radar.label}，需与实时确认区分。`:'暂无已确认的触发价。'),items:slots,paused:false,phase};
+  return {title,marketSubtitle:subtitle,subtitle:subtitle+(radar?`${radar.root} ${radar.label}，需与实时确认区分。`:'暂无已确认的触发价。'),items:slots,paused:false,phase};
 }
 
 export function feedHealth(snapshot, connection, now=Date.now()) {
