@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from bisect import bisect_right
+import json
 import multiprocessing as mp
 import queue
 import re
@@ -10,7 +12,7 @@ from datetime import timedelta
 from .domain import ROOT, Bar, bar_finished_at, completed_bar, dt, expected_end, iso, load_config, now, quote_problem, quote_time, session, stable_id
 from .engine import Engine
 from .live_preview import LivePreview
-from .markets import market, valid_contract, root_of, trading_day, trading_windows, day_close, labels
+from .markets import market, valid_contract, root_of, trading_day, trading_windows, day_close, labels, ordered_days
 from .storage import Store
 from .wind_worker import worker_main
 from .options_service import OptionsDesk
@@ -58,6 +60,7 @@ class Desk:
         self.minute_demand={}
         self.last_quote_saved={}
         self.gap_cache={}
+        self.chart_cache = {}
         self.running=True
         self.metrics={'started_at':iso(now()),'rule_version':self.config['version'],'first_live_at':None,'last_live_at':None,'healthy_seconds':0.,'quote_updates':0,'bar_batches':0,'live_confirmations':0,'restarts':0,'ui_samples':0,'ui_max_ms':0,'ui_over_2s':0,'source_ui_samples':0,'source_ui_max_ms':0,'source_ui_over_2s':0,'per_contract':{}}
         self.options=OptionsDesk(self)
@@ -152,9 +155,10 @@ class Desk:
         day=trading_day(at,code,cal)
         return day if day in cal else max((d for d in cal if d<=day),default=day)
 
-    def history_dates(self, code='IM'):
-        day=self.current_day(code)
-        return sorted(d for d in self.calendar_for(code) if d<=day)[-self.config['history_days']:]
+    def history_dates(self, code='IM', at=None):
+        day = self.current_day(code, at)
+        days = ordered_days(self.calendar_for(code))
+        return days[:bisect_right(days, day)][-self.config['history_days']:]
 
     def begin_watch(self, roots=None):
         roots=roots or [r for r in self.config['watchlist'] if r in self.mapping and self.calendar_for(r)]
@@ -215,13 +219,41 @@ class Desk:
         self.feed_state='Wind 已连接 · 分品种同步中'
         self.finish_bootstrap()
 
-    def available_bars(self, code, tf):
+    def available_bars(self, code, tf, after=None, *, at=None):
         if not valid_contract(code):
             return []
-        dates=self.history_dates(code)
-        cal=self.calendar_for(code)
-        allowed=set(dates)
-        return [b for b in self.store.bars(code,tf) if trading_day(b.end,code,cal) in allowed and completed_bar(b,now(),self.config['bar_grace_seconds'],cal)]
+        at = at or now()
+        dates = self.history_dates(code, at)
+        if not dates:
+            return []
+        cal = self.calendar_for(code)
+        first_open = trading_windows(dates[0], code, cal)[0][0]
+        # Start from the first exchange session (possibly Friday night). The
+        # extra civil day also admits older timestamps with a different offset.
+        lower = (first_open - timedelta(days=1)).date().isoformat()
+        rows = self.store.bars(code, tf, after=max(lower, after or ''))
+        allowed = set(dates)
+        return [b for b in rows if trading_day(b.end, code, cal) in allowed
+                and completed_bar(b, at, self.config['bar_grace_seconds'], cal)]
+
+    def chart_payload(self, code, tf):
+        if not valid_contract(code):
+            return b'[]'
+        at = now()
+        cal = self.calendar_for(code)
+        grace = self.config['bar_grace_seconds']
+        key = (code, self.store.bar_versions.get((code, tf), 0), frozenset(cal),
+               self.history_dates(code, at), grace, expected_end(at, tf, cal, grace, code))
+        # Keep just one encoded reply per product/timeframe, shared by its
+        # main chart, card and any additional tabs. Signal processing reads bars directly.
+        slot = (root_of(code), tf)
+        cached = self.chart_cache.get(slot)
+        if cached is None or cached[0] != key:
+            bars = self.available_bars(code, tf, at=at)
+            payload = json.dumps([b.json() for b in bars], allow_nan=False,
+                                 separators=(',', ':')).encode()
+            cached = self.chart_cache[slot] = (key, payload)
+        return cached[1]
 
     def rebuild(self, code):
         self.gap_cache.clear()
@@ -297,7 +329,7 @@ class Desk:
                 continue
             latest5=engine.bars[-1].end if engine.bars else ''
             latest15=engine.context[-1].end if engine.context else ''
-            pending=[b for b in self.available_bars(code,5) if b.end>latest5]+[b for b in self.available_bars(code,15) if b.end>latest15]
+            pending=self.available_bars(code,5,after=latest5)+self.available_bars(code,15,after=latest15)
             # Recovery after a missed cycle is replay-only. Ordinary updates must be recent.
             recovery=any((now()-bar_finished_at(b)).total_seconds()>95 for b in pending if b.timeframe==5)
             for b in sorted(pending,key=lambda b:(b.end,-b.timeframe)):
@@ -405,7 +437,7 @@ class Desk:
             else:
                 if cmd['op']=='calendar':
                     name=cmd.get('calendar','CFFEX')
-                    self.calendars[name]=set(packet['payload'])
+                    self.calendars[name]=frozenset(packet['payload'])
                     self.store.set('calendar_'+name,sorted(self.calendars[name]))
                     if name=='CFFEX':
                         self.calendar=self.calendars[name]
@@ -632,6 +664,7 @@ class Desk:
             status,ready=self.health(code) if code else (self.root_errors.get(root,'等待主力映射'),False)
             instruments.append(dict(root=root,contract=code,market=spec,trading_day=self.current_day(root),quote=q,market_time=iso(stamp) if stamp else None,
                                     phase=session(now(),self.calendar_for(root),code or root),
+                                    bar_versions={tf:self.store.bar_versions.get((code,tf),0) for tf in (1,5,15)},
                                     live_bars=self.preview.snapshot(code,now()) if code else {},
                                     age_seconds=round((now()-stamp).total_seconds(),1) if stamp else None,
                                     status=status,ready=ready,**(engine.snapshot() if engine else {'regime':{'state':'warming','label':'数据预热'},'note':'正在加载真实行情','levels':[],'structures':[],'opportunities':[]})))

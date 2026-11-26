@@ -1,8 +1,43 @@
 // Display-only previews are merged here, never sent to a signal/replay endpoint.
 export function mergeChartBars(closed, provisional=[]){
+  // Stored and replayed history already comes in timestamp order.
+  if(closed.every((b,i)=>i===0 || closed[i-1].end<b.end)){
+    if(!provisional.length)return closed;
+    const lastClosed=closed.at(-1)?.end||'';
+    if(provisional.every((b,i)=>b.end>(i?provisional[i-1].end:lastClosed)))return [...closed,...provisional];
+  }
   const rows=new Map(provisional.map(b=>[b.end,b]));
   for(const b of closed)rows.set(b.end,b); // Native finalized OHLC always wins.
   return [...rows.values()].sort((a,b)=>a.end.localeCompare(b.end));
+}
+
+function candlePoint(b){
+  const point={time:Date.parse(b.end)/1000,open:b.open,high:b.high,low:b.low,close:b.close};
+  if(b.provisional){
+    point.color=b.close>=b.open?'rgba(236,116,109,.35)':'rgba(86,188,167,.35)';
+    point.borderColor=point.wickColor='#e0bd79';
+  }
+  return point;
+}
+
+function sameCandle(a,b){
+  return a===b || (a.end===b.end && a.open===b.open && a.high===b.high
+    && a.low===b.low && a.close===b.close && Boolean(a.provisional)===Boolean(b.provisional));
+}
+
+export function updateChartCandles(series,previous,next){
+  if(previous===next)return;
+  let i=0;
+  while(i<previous.length && i<next.length && sameCandle(previous[i],next[i]))i++;
+  if(i===previous.length && i===next.length)return;
+  // The chart can replace its last candle or append. Corrections earlier in the
+  // series, removals and replay rewinds need a complete replacement.
+  if(!previous.length || next.length<previous.length || (i<previous.length &&
+      (i!==previous.length-1 || previous[i].end!==next[i].end))){
+    series.setData(next.map(candlePoint));
+    return;
+  }
+  for(;i<next.length;i++)series.update(candlePoint(next[i]));
 }
 
 export function followLatestRange(range,previousCount,nextCount){
@@ -11,23 +46,40 @@ export function followLatestRange(range,previousCount,nextCount){
   return {from:range.from+shift,to:range.to+shift};
 }
 
+// Wind labels are matched exactly on 1m/5m. On 15m a 5m event belongs to
+// the first candle ending at or after it, within the same 15-minute window.
+export function chartTimeLookup(bars, timeframe) {
+  const times = bars.map(bar => Date.parse(bar.end));
+  return stamp => {
+    const target = Date.parse(stamp);
+    if (!Number.isFinite(target)) return null;
+    let left = 0, right = times.length;
+    while (left < right) {
+      const mid = Math.floor((left + right) / 2);
+      if (times[mid] < target) left = mid + 1;
+      else right = mid;
+    }
+    const delta = times[left] - target;
+    return delta === 0 || (timeframe === 15 && delta < 15 * 60_000) ? times[left] / 1000 : null;
+  };
+}
+
 export function structureMarkers(structures,bars,timeframe){
   if(!bars.length)return [];
   const points=new Map();
-  const times=bars.map(b=>Date.parse(b.end));
+  const at=chartTimeLookup(bars,timeframe);
   for(const e of (structures||[]).slice(-70)){
     if(!['pivot','structure'].includes(e.kind))continue;
-    const anchor=Date.parse(e.occurred_at);
-    const index=timeframe===15?times.findIndex(t=>t>=anchor):times.indexOf(anchor);
-    if(index<0||anchor<times[index]-timeframe*60000)continue;
+    const time=at(e.occurred_at);
+    if(time===null)continue;
     const isPivot=e.kind==='pivot';
     const above=isPivot?e.side==='high':e.direction!==1;
     const position=above?'aboveBar':'belowBar';
     const text=(e.scale==='internal'?'i':'s')+(isPivot?(e.side==='high'?'H':'L'):' '+e.label);
-    const key=times[index]+position;
+    const key=time+position;
     let point=points.get(key);
     if(!point){
-      point={time:times[index]/1000,position,color:'#7c93ad',shape:'circle',size:.5,labels:[]};
+      point={time,position,color:'#7c93ad',shape:'circle',size:.5,labels:[]};
       points.set(key,point);
     }
     if(!point.labels.includes(text))point.labels.push(text);

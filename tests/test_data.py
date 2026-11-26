@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import json
 from pathlib import Path
 
 import pytest
@@ -93,3 +94,73 @@ def test_invalid_manual_contract_is_rejected(tmp_path):
     with pytest.raises(ValueError):
         desk.set_watch('IM','IM.CFE')
     desk.stop()
+
+
+def test_incremental_bars_keep_night_ownership_and_completion_gates(tmp_path, monkeypatch):
+    at = dt('2026-11-23T09:06:05+08:00')
+    monkeypatch.setattr('app.service.now', lambda: at)
+    desk = Desk(tmp_path, offline=True)
+    desk.calendars['INE'] = {'2026-11-20', '2026-11-23'}
+    desk.config['history_days'] = 1
+    code = 'SC2701.INE'
+    labels = ['2026-11-20T15:00', '2026-11-20T21:05', '2026-11-21T02:30',
+              '2026-11-23T09:04', '2026-11-23T09:05', '2026-11-23T09:10']
+    bars = [Bar(code, 5, label+':00+08:00', 600, 602, 598, 601) for label in labels]
+    try:
+        desk.store.save_bars(bars, iso(at))
+        desk.watch = {'SC': code}
+        sc = next(item for item in desk.snapshot()['instruments'] if item['root'] == 'SC')
+        assert sc['bar_versions'] == {1: 0, 5: 1, 15: 0}
+        full = desk.available_bars(code, 5)
+        assert full == [bars[1], bars[2], bars[4]]
+        for cutoff in bars:
+            assert desk.available_bars(code, 5, after=cutoff.end) == [b for b in full if b.end > cutoff.end]
+    finally:
+        desk.stop()
+
+
+def test_chart_versions_change_only_for_inserted_or_revised_series(tmp_path):
+    store = Store(tmp_path/'desk.sqlite3')
+    code = 'IM2612.CFE'
+    end = '2026-11-10T09:45:00+08:00'
+    five = Bar(code, 5, end, 100, 105, 99, 102)
+    fifteen = Bar(code, 15, end, 100, 105, 98, 103)
+    revision = Bar(code, 5, end, 100, 105, 99, 101)
+    try:
+        store.save_bars([five, fifteen], end)
+        store.save_bars([five, fifteen], end)
+        assert store.bar_versions == {(code, 5): 1, (code, 15): 1}
+        assert store.save_bars([fifteen, revision], end) == [revision]
+        assert store.bar_versions == {(code, 5): 2, (code, 15): 1}
+    finally:
+        store.close()
+
+
+def test_chart_cache_observes_grace_revision_calendar_and_clock_rewind(tmp_path, monkeypatch):
+    at = dt('2026-11-23T09:06:04+08:00')
+    monkeypatch.setattr('app.service.now', lambda: at)
+    desk = Desk(tmp_path, offline=True)
+    cal = {'2026-11-20', '2026-11-23'}
+    desk.calendars['INE'] = cal
+    desk.config['history_days'] = 1
+    code = 'SC2701.INE'
+    def bar(label, close=600):
+        return Bar(code, 5, iso(label), 600, 602, 598, close)
+    friday = bar('2026-11-20 21:05')
+    monday = bar('2026-11-23 09:05')
+    try:
+        desk.store.save_bars([friday, monday], iso(at))
+        early = desk.chart_payload(code, 5)
+        assert json.loads(early) == [friday.json()]
+        assert desk.chart_payload(code, 5) is early
+        at += timedelta(seconds=1)
+        assert json.loads(desk.chart_payload(code, 5)) == [friday.json(), monday.json()]
+        revision = bar('2026-11-23 09:05', close=601)
+        desk.store.save_bars([revision], iso(at))
+        assert json.loads(desk.chart_payload(code, 5)) == [friday.json(), revision.json()]
+        at -= timedelta(seconds=1)
+        assert json.loads(desk.chart_payload(code, 5)) == [friday.json()]
+        cal.remove('2026-11-20')
+        assert json.loads(desk.chart_payload(code, 5)) == []
+    finally:
+        desk.stop()

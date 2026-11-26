@@ -75,14 +75,14 @@ class EtfFlowHistory:
         if (not flow or flow.get('source') != 'WindPy WSQ' or flow.get('value') is None
                 or not flow.get('time') or flow['time'][:10] != at.date().isoformat()):
             return result
+        rolling_total = flow.get('rolling_20d_total')
+        if isinstance(rolling_total, (int, float)) and isfinite(rolling_total):
+            # Wind also publishes dated totals after the exchange session.
+            result['rolling_20d_mean'] = rolling_total / BASELINE_DAYS
+            result['rolling_20d_excess'] = flow['value'] - result['rolling_20d_mean']
         clock = session_clock(flow['time'])
         if clock is None:
             return result
-        rolling_total = flow.get('rolling_20d_total')
-        if isinstance(rolling_total, (int, float)) and isfinite(rolling_total):
-            # The vendor field has a fixed 20-day window independent of local same-clock coverage.
-            result['rolling_20d_mean'] = rolling_total / 20
-            result['rolling_20d_excess'] = flow['value'] - result['rolling_20d_mean']
         opening, second = clock
         dates = self.days.get(code, {})
         result['speed'] = rate(dates.get(flow['time'][:10], []), second, flow['value'], opening)

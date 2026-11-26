@@ -2,7 +2,8 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 
 const EMPTY = [];
 const sameSeries = (left, right) => left.contract === right.contract
-  && left.trading_day === right.trading_day && left.last_bar === right.last_bar;
+  && left.trading_day === right.trading_day && left.last_bar === right.last_bar
+  && left.bar_versions?.[5] === right.bar_versions?.[5];
 
 export function nextCardRead(instruments, selectedFive, entries, now, preview) {
   return instruments.find(item => {
@@ -25,11 +26,12 @@ export function useCardBars(instruments = EMPTY, selectedFive, preview, api) {
     if (!latest.current.instruments.some(current => sameSeries(current, item))) return;
     const old = entries.current.get(item.contract);
     const compact = Array.isArray(rows)
-      ? rows.filter(b => typeof b?.end === 'string' && Number.isFinite(b.close)).map(({end, close}) => ({end, close}))
+      ? rows.filter(b => typeof b?.end === 'string' && Number.isFinite(b.close))
+        .map(({end, open, high, low, close}) => ({end, open, high, low, close}))
       : old && old.trading_day === item.trading_day ? old.rows : EMPTY;
     const retry = !Array.isArray(rows) || !compact.length;
-    const {contract, trading_day, last_bar} = item;
-    entries.current.set(contract, {contract, trading_day, last_bar, rows: compact, retry,
+    const {contract, trading_day, last_bar, bar_versions} = item;
+    entries.current.set(contract, {contract, trading_day, last_bar, bar_versions, rows: compact, retry,
       nextRead: Date.now() + (retry ? 30_000 : 300_000)});
     invalidate(version => version + 1);
   }, []);

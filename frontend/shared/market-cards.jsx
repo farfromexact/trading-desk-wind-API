@@ -49,8 +49,12 @@ export function MarketCardGrid({items, selected, onSelect, atmosphere, showStatu
     {groups.map(([name, members]) => <div className={'market-group size-' + members.length} key={name}>
       <div className="group-label">{name}<span>{String(members.length).padStart(2, '0')}</span></div>
       <div className="market-cards">{members.map(item => {
-        const signal = atmosphere?.actionable.some(o => o.root === item.root) ? 'action'
+        const plans = atmosphere?.actionable.filter(o => o.root === item.root) || [];
+        const signal = plans.length ? 'action'
           : atmosphere?.watching.some(o => o.root === item.root) ? 'watch' : undefined;
+        const touched = plans.some(o => o.status === 'triggered');
+        const waiting = plans.some(o => o.status === 'confirmed');
+        const stage = touched && waiting ? '待触价 / 已触价' : touched ? '已触价' : '收盘已确认';
         const fullName = item.market?.name || item.root;
         const name = fullName.replace('年国债', '年债').replace(/^(中证|沪深|上证)/, '');
         const muted = paused || !item.usable;
@@ -68,7 +72,7 @@ export function MarketCardGrid({items, selected, onSelect, atmosphere, showStatu
           aria-pressed={selected === item.root} aria-label={showStatus ? '选择' + fullName + ' ' + item.root : '查看 ' + item.root + ' ' + fullName + ' 走势'}
           data-muted={muted || undefined} data-signal={signal} title={title} onClick={() => onSelect(item.root)}>
           <div className="card-name"><b>{item.root}</b>{signal
-            ? <span className="card-signal">{signal === 'action' ? '● 收盘已确认' : '◉ 关注中'}</span>
+            ? <span className="card-signal">{signal === 'action' ? '● ' + stage : '◉ 关注中'}</span>
             : <span>{name}</span>}</div>
           <div className="card-change">{signed(item.pct)}{finite(item.pct) && <small>%</small>}</div>
           <div className="change-basis">{caption}</div>

@@ -58,6 +58,8 @@ Windows/macOS 共用同一个 `WindPyContextClient`。所有正式行情、期�
 
 ## 本机缓存与交接
 
+收盘后收到带当日 Wind 源时间的 ETF 快照时，仍可用有效的累计净额和滚动总额显示滚动 20 日均额与差额。近 5 分钟流速和往日同刻对照继续使用交易时段的样本。
+
 新缓存 `data/market-context-windpy.json`；原始回执 `data/market-context-windpy-observed-YYYYMMDD.jsonl`；ETF审计 `data/market-context-windpy-etf-audit.json`，解析前原始回执 `data/windpy-context-raw-YYYYMMDD.jsonl`。均已被Git忽略，不保存凭据。
 
 旧 `market-context.json` 不会被正式服务加载或覆盖，避免来源变化时旧资金流冒充新数据。离线历史预览脚本仍可读取明确提供的旧研究回执，不访问MCP网络。11月14日的MCP验收仅为历史记录，不代表本次WindPy验证。

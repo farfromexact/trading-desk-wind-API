@@ -24,6 +24,14 @@ test('new mapping, trading day or closed candle invalidates the corresponding cu
   }
 });
 
+test('a correction to an existing 5m candle invalidates just its own card', () => {
+  const entry = {...ag, bar_versions: {1: 3, 5: 4}, retry: false, nextRead: 300000};
+  const cache = new Map([[ag.contract, entry]]);
+  assert.equal(nextCardRead([{...ag, bar_versions:{1:5, 5:4}}], null, cache, 1000, false), undefined);
+  const corrected = {...ag, bar_versions:{1:3, 5:5}};
+  assert.equal(nextCardRead([corrected], null, cache, 1000, false), corrected);
+});
+
 test('missing bars never turn invalid quotes into a zero return or a settlement-based return', () => {
   const state = {server_time: at, instruments: [{...im, ready: true, market_time: at, quote: {rt_last: 101}}]};
   const data = {state, mode:'live', context:{}, bars:{}};
