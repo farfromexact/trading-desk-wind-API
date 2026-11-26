@@ -1,10 +1,27 @@
-import {clock, date, equityPhase, finite, marketPhase, opportunityLabels, sourceQuality, sourceUsable, viewTime} from '../shared/market-model.js';
+import {
+  chartSession, clock, contracts as marketContracts, date, datedClock, displayUsable, equityPhase,
+  finite, marketPhase, opportunityLabels, reviewPhase, reviewQuality, sourceQuality, viewTime,
+} from '../shared/market-model.js';
+import {CANDLE_WINDOW} from './candle-layout.js';
 export * from '../shared/market-model.js';
 
-export function recentEvents(snapshot, minutes=30) {
-  const times=snapshot.state.instruments.map(i=>Date.parse(i.market_time)).filter(finite);
+export function contracts(snapshot) {
+  return marketContracts(snapshot).map(item => {
+    const {daily, curveSession, trend, market} = item;
+    const preceding = curveSession ? trend.bars.slice(-CANDLE_WINDOW).filter(bar => bar.end < curveSession.start) : [];
+    const contextSession = chartSession(preceding.at(-1)?.end, market);
+    const contextBars = contextSession ? preceding.filter(bar => bar.end >= contextSession.start) : [];
+    const chart = {bars: daily, session: curveSession, time: daily.at(-1)?.end ?? null, contextBars, contextSession};
+    return {...item, chart};
+  });
+}
+
+export function recentEvents(snapshot, minutes=30, items=contracts(snapshot)) {
+  const times=items.map(i=>Date.parse(i.changeTime)).filter(finite);
   const serverEnd=Date.parse(snapshot.state.server_time||snapshot.captured_at);
-  const end=snapshot.mode==='live'&&marketPhase(snapshot.state.instruments)==='盘中'?serverEnd:Math.min(serverEnd,times.length?Math.max(...times):serverEnd),start=end-minutes*60000;
+  const review=snapshot.mode!=='live'||marketPhase(items)!=='盘中';
+  const end=review&&times.length?Math.min(serverEnd,Math.max(...times)):serverEnd;
+  const start=end-minutes*60000;
   const map=new Map();
   const add=e=>{
     const time=Date.parse(e.known_at);
@@ -30,7 +47,7 @@ export function recentEvents(snapshot, minutes=30) {
       lastCross=time;
     }
   }
-  return {start,end,items:[...map.values()].sort((a,b)=>Date.parse(b.known_at)-Date.parse(a.known_at))};
+  return {start,end,review,items:[...map.values()].sort((a,b)=>Date.parse(b.known_at)-Date.parse(a.known_at))};
 }
 
 export function optionSummary(context) {
@@ -44,8 +61,9 @@ export function optionSummary(context) {
 
 export function etfQuality(flow, snapshot) {
   if(!flow||flow.frequency!=='intraday_cumulative'||flow.unit!=='元'||!finite(flow.value))return '资金流缺失';
-  if(snapshot.context.error||snapshot.context.etf_errors?.flow)return '资金流更新异常';
-  return sourceQuality(flow.time,viewTime(snapshot),equityPhase(snapshot));
+  const phase=equityPhase(snapshot);
+  if(!reviewPhase(phase)&&(snapshot.context.error||snapshot.context.etf_errors?.flow))return '资金流更新异常';
+  return reviewQuality(sourceQuality(flow.time,viewTime(snapshot),phase),phase);
 }
 
 export function etfFlowReading(flow, snapshot) {
@@ -62,10 +80,11 @@ export function etfFlowReading(flow, snapshot) {
     };
   }
   const quality = etfQuality(flow, snapshot);
-  const valid = sourceUsable(quality);
+  const valid = displayUsable(quality);
+  const caption = quality === '快照内有效' ? `日内 · ${clock(flow.time)}` : valid ? `${quality} · ${datedClock(flow.time)}` : quality;
   return {
     value: valid ? flow.value : null,
-    caption: valid ? `日内 · ${clock(flow.time)}` : quality,
+    caption,
     detail: [flow?.time, quality, flow?.reason].filter(Boolean).join(' · '),
   };
 }

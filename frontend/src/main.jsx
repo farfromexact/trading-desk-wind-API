@@ -5,6 +5,9 @@ import './style.css';
 import {deskGuidance, quoteReady} from './desk-guidance.js';
 import {GuidanceStrip, GuidanceExampleDialog, exampleGuide, useAwaySummary} from './desk-guidance.jsx';
 import { mergeChartBars, updateChartCandles, followLatestRange, structureMarkers, spaceMarkerLabels } from './chart-data';
+import {structureOverlay} from './structure-overlay.js';
+import {StructurePrimitive} from './structure-primitive.js';
+import {MetricHelp} from './metric-help.jsx';
 
 import { contractRoot, shortContract, formatPrice, formatNumber, currentOpportunity } from './market-format';
 import {OptionsEnvironment,OptionsWorkbench,OptionsDetails} from './options';
@@ -80,12 +83,31 @@ function useFeed(onAlert,preview=false){
   return {state,events,connected,clock,applyOptionsMonitor};
 }
 
-function Chart({contract,market,tf,bars,levels,structures,quote,op,focus,focusTime,provisional,onLatest,preview=false}){
+function Chart({contract,market,tf,bars,fiveMinuteBars,lastFiveBar,asOf,levels,structures,quote,op,focus,focusTime,provisional,onLatest,preview=false}){
   const element=useRef(), chart=useRef(), series=useRef(),markers=useRef(), lines=useRef([]),initial=useRef(true),focusApplied=useRef(null);
   const previousBars=useRef(EMPTY_BARS);
   const fullMarkers=useRef([]),markerTimes=useRef([]),refreshMarkerLabels=useRef(null);
+  const primitive=useRef(null), breaksByTime=useRef(new Map()), hoverPoint=useRef({}), refreshHover=useRef(null);
+  const [detail,setDetail]=useState('swing'), [showZones,setShowZones]=useState(true);
   const [hoverStructure,setHoverStructure]=useState('');
-  const displayBars=useMemo(()=>mergeChartBars(bars,bars.length?provisional:[]),[bars,provisional]);
+  const closed=useMemo(()=>bars.filter(b=>(!b.contract||b.contract===contract)&&(!b.timeframe||b.timeframe===tf)&&!b.provisional),[bars,contract,tf]);
+  const displayBars=useMemo(()=>mergeChartBars(closed,closed.length?provisional:[]),[closed,provisional]);
+  // A heartbeat after the last candle and confirmation cannot change the overlay.
+  // Earlier replay frames still use their own cutoff.
+  const lastStructureInput=useMemo(()=>{
+    const stamps=[closed.at(-1)?.end,fiveMinuteBars?.at(-1)?.end,...(structures||[]).map(e=>e.known_at)];
+    let latest=-Infinity;
+    for(const stamp of stamps){
+      const when=Date.parse(stamp);
+      if(when>latest)latest=when;
+    }
+    return latest;
+  },[closed,fiveMinuteBars,structures]);
+  const cutoff=Math.min(Date.parse(asOf),lastStructureInput);
+  const structure=useMemo(()=>structureOverlay({contract,timeframe:tf,bars:closed,fiveMinuteBars,lastFiveBar,
+    structures,asOf:Number.isFinite(cutoff)?new Date(cutoff).toISOString():null,detail,showZones}),
+    [contract,tf,closed,fiveMinuteBars,lastFiveBar,structures,cutoff,detail,showZones]);
+  const closedMarkers=useMemo(()=>structureMarkers(structure.markers,closed,tf),[structure,closed,tf]);
   useEffect(()=>{
     initial.current=true;
     previousBars.current=EMPTY_BARS;
@@ -102,16 +124,36 @@ function Chart({contract,market,tf,bars,levels,structures,quote,op,focus,focusTi
     });
     const s=c.addSeries(CandlestickSeries,{upColor:'#ec746d',downColor:'#56bca7',borderUpColor:'#ec746d',borderDownColor:'#56bca7',wickUpColor:'#ec746d',wickDownColor:'#56bca7',priceFormat:{type:'price',precision:market?.decimals??1,minMove:market?.tick_size??.2},lastValueVisible:false,priceLineVisible:false});
     chart.current=c;series.current=s;markers.current=createSeriesMarkers(s,[]);lines.current=[];
-    fullMarkers.current=[];markerTimes.current=[];setHoverStructure('');
+    primitive.current=new StructurePrimitive();
+    s.attachPrimitive(primitive.current);
+    fullMarkers.current=[];markerTimes.current=[];hoverPoint.current={};setHoverStructure('');
     let lastLabels;
     refreshMarkerLabels.current=()=>{
       const visible=spaceMarkerLabels(fullMarkers.current,markerTimes.current,c.timeScale().getVisibleLogicalRange(),Math.max(1,element.current.clientWidth-75));
       const key=JSON.stringify(visible);
-      if(key!==lastLabels){lastLabels=key;markers.current.setMarkers(visible);}
+      if(key!==lastLabels){lastLabels=key;markers.current?.setMarkers(visible);}
     };
     c.timeScale().subscribeVisibleLogicalRangeChange(()=>refreshMarkerLabels.current?.());
-    c.subscribeCrosshairMove(param=>setHoverStructure(fullMarkers.current.filter(p=>p.time===param.time).map(p=>p.text).join(' · ')));
-    return()=>{refreshMarkerLabels.current=null;c.remove();chart.current=null;series.current=null;};
+    refreshHover.current=()=>{
+      const {stamp,price}=hoverPoint.current;
+      const events=breaksByTime.current.get(stamp);
+      const details=(events||[]).map(e=>(e.scale==='swing'?'波段':'内部')+' '+e.label+' · '+(e.direction===1?'上破 ':'下破 ')
+        +formatPrice(e.price,market)+' · 确认 '+time(e.known_at));
+      if(Number.isFinite(price)){
+        for(const zone of primitive.current?.data.zones||[]){
+          if(stamp>=zone.from&&price>=zone.low&&price<=zone.high){
+            const name=zone.direction===1?'上破回踩区':'下破反抽区';
+            details.push(name+' '+formatPrice(zone.low,market)+'–'+formatPrice(zone.high,market));
+          }
+        }
+      }
+      setHoverStructure(details.join(' / ')||fullMarkers.current.filter(p=>p.time===stamp).map(p=>p.text).join(' · '));
+    };
+    c.subscribeCrosshairMove(param=>{hoverPoint.current={stamp:param.time,price:param.point?s.coordinateToPrice(param.point.y):null};refreshHover.current?.();});
+    return()=>{
+      refreshMarkerLabels.current=null;refreshHover.current=null;
+      c.remove();chart.current=null;series.current=null;markers.current=null;primitive.current=null;
+    };
   },[contract,tf,market?.decimals,market?.tick_size]);
   useEffect(()=>{
     if(!series.current)return;
@@ -128,7 +170,7 @@ function Chart({contract,market,tf,bars,levels,structures,quote,op,focus,focusTi
   useEffect(()=>{
     if(!series.current)return;
     const list=[];
-    const current=quote?.rt_last||bars.at(-1)?.close;
+    const current=quote?.rt_last||closed.at(-1)?.close;
     const levelStyles={
       '前日高点':{color:'#88b9ed',lineStyle:LineStyle.Dashed},
       '前日低点':{color:'#88b9ed',lineStyle:LineStyle.Dashed},
@@ -139,7 +181,9 @@ function Chart({contract,market,tf,bars,levels,structures,quote,op,focus,focusTi
       '区间上沿':{color:'#71b9b5',lineStyle:LineStyle.SparseDotted},
       '区间下沿':{color:'#71b9b5',lineStyle:LineStyle.SparseDotted},
     };
-    const closest=[...(levels||[])].sort((a,b)=>Math.abs(a.price-current)-Math.abs(b.price-current)).slice(0,5);
+    const closest=(levels||[]).filter(p=>!p.crossed && (detail==='all' || ['前日高点','前日低点'].includes(p.name)
+      || (detail==='swing' && ['波段高点','波段低点'].includes(p.name))))
+      .sort((a,b)=>Math.abs(a.price-current)-Math.abs(b.price-current)).slice(0,5);
     closest.forEach(p=>list.push({price:p.price,
       ...(levelStyles[p.name]||{color:'#88b9ed',lineStyle:LineStyle.Dashed}),
       title:p.name==='EQH'?'EQH 等高':p.name==='EQL'?'EQL 等低':p.name,
@@ -159,23 +203,44 @@ function Chart({contract,market,tf,bars,levels,structures,quote,op,focus,focusTi
       }
     });
     for(const old of lines.current.splice(list.length))series.current.removePriceLine(old.line);
-  },[contract,tf,market?.decimals,market?.tick_size,levels,quote?.rt_last,op,bars]);
+  },[contract,tf,market?.decimals,market?.tick_size,levels,quote?.rt_last,op,closed,detail]);
   useEffect(()=>{
-    if(!series.current)return;
-    const points=structureMarkers(structures,displayBars,tf);
+    if(!primitive.current)return;
+    primitive.current.setData(structure);
+    breaksByTime.current=structure.breaksByTime;
+  },[contract,tf,market?.decimals,market?.tick_size,structure]);
+  useEffect(()=>{
+    if(!markers.current)return;
+    const points=[...closedMarkers];
     for(const b of displayBars.filter(b=>b.provisional))points.push({time:epoch(b.end),position:'aboveBar',color:'#e0bd79',shape:'circle',size:.5,text:b.forming?'未收盘':'待核对'});
     fullMarkers.current=points.sort((a,b)=>a.time-b.time);
     markerTimes.current=displayBars.map(b=>epoch(b.end));
     refreshMarkerLabels.current?.();
-  },[contract,tf,market?.decimals,market?.tick_size,structures,displayBars]);
+    refreshHover.current?.();
+  },[contract,tf,closedMarkers,displayBars,market?.decimals,market?.tick_size]);
   useEffect(()=>{
     const focusKey=focusTime||focus;
-    if(!focusKey||!bars.length||!chart.current||focusApplied.current===focusKey)return;
+    if(!focusKey||!closed.length||!chart.current||focusApplied.current===focusKey)return;
     const target=focusTime||op?.confirmation_bar||op?.signal_bar;
-    const i=bars.findIndex(b=>b.end>=target);
-    if(i>=0){chart.current.timeScale().setVisibleLogicalRange({from:Math.max(0,i-50),to:Math.min(bars.length+8,i+12)});focusApplied.current=focusKey;}
-  },[focus,focusTime,bars]);
-  return <div className="chart-wrap"><div ref={element} className="chart-canvas"/>{hoverStructure&&<div className="chart-structure-readout">{hoverStructure}</div>}{quote&&<button className="chart-latest" onClick={()=>{onLatest?.();chart.current?.timeScale().scrollToRealTime();}}>{preview?'回到样本末端 ↗':'回到最新 ↗'}</button>}{!bars.length&&<div className="chart-empty">{preview?'历史样本未载入该合约或周期的K线':<><span className="loader"/>正在等待真实K线数据</>}</div>}</div>;
+    const i=closed.findIndex(b=>b.end>=target);
+    if(i>=0){chart.current.timeScale().setVisibleLogicalRange({from:Math.max(0,i-50),to:Math.min(closed.length+8,i+12)});focusApplied.current=focusKey;}
+  },[focus,focusTime,closed,op?.confirmation_bar,op?.signal_bar]);
+  return <><div className="structure-controls">
+    <span>5分钟结构</span>
+    <div className="segments" role="group" aria-label="结构显示">
+      {[['swing','波段'],['all','含内部'],['off','隐藏']].map(([value,label])=><button key={value} type="button"
+        aria-pressed={detail===value} className={detail===value?'active':''} onClick={()=>setDetail(value)}>{label}</button>)}
+    </div>
+    <label><input type="checkbox" checked={showZones} disabled={detail==='off'} onChange={e=>setShowZones(e.target.checked)}/>回踩区</label>
+    <MetricHelp label="5分钟结构">实线连接波段前高或前低与突破收盘，虚线表示内部结构。BOS 是同向延续，CHoCH 是方向切换。将十字线移到突破 K 线可读价格和确认时间，移到色带内可读上下沿。色带取波段拐点至突破前最后一根反向 5 分钟 K 线的高低，自突破确认起显示。后续 5 分钟收盘跌破上破区下沿或升破下破区上沿时撤除。每个方向保留最近两个有效区。</MetricHelp>
+  </div><div className="chart-wrap"><div ref={element} className="chart-canvas"/>{hoverStructure&&<div className="chart-structure-readout">{hoverStructure}</div>}{quote&&<button className="chart-latest" onClick={()=>{onLatest?.();chart.current?.timeScale().scrollToRealTime();}}>{preview?'回到样本末端 ↗':'回到最新 ↗'}</button>}{!closed.length&&<div className="chart-empty">{preview?'历史样本未载入该合约或周期的K线':<><span className="loader"/>正在等待真实K线数据</>}</div>}</div>
+    <div className="chart-legend">
+      <span><i className="red"/>上涨</span><span><i className="green"/>下跌</span>
+      {detail!=='off'&&<span><i className="structure-key swing"/>波段</span>}
+      {detail==='all'&&<span><i className="structure-key internal"/>内部</span>}
+      {displayBars.some(b=>b.provisional)&&<span className="live-candle-note">金边K线为盘中预览</span>}
+      {detail!=='off'&&<span className="right">{detail==='all'?'H 高点 / L 低点 · 确认后回标　':''}{tf===5?'5分钟收盘确认':'结构来自5分钟收盘'}</span>}
+    </div></>;
 }
 
 function Opportunity({op,market,selected,onClick,last,tone}){
@@ -206,7 +271,7 @@ function ReplayDialog({contract,market,onClose}){
   const frame=data?.frames[index],view=frame?.snapshot;
   const visibleBars=useMemo(()=>data?.bars.filter(b=>b.end<=(frame?.label||''))||[],[data,frame?.label]);
   const op=view?.opportunities.at(-1);
-  return <div className="modal-backdrop"><section className="replay-modal panel" role="dialog" aria-modal="true" aria-label="历史K线回放"><div className="panel-head"><h2>历史回放 · {shortContract(contract)}</h2><button onClick={onClose} aria-label="关闭回放">关闭 ×</button></div><div className="replay-controls"><input aria-label="回放日期" type="date" value={day} onChange={e=>setDay(e.target.value)}/><button disabled={loading} onClick={load}>{loading?'加载中…':'加载日期'}</button><span>终态K线 · 确认声音暂停</span></div><div className="replay-caption">{data?.description||'仅使用当前电脑已经采集的数据。回放不会调用 Wind 下单或修改真实事件。'}</div>{error&&<p className="replay-error">{error}</p>}{frame&&<><div className="replay-timeline"><button onClick={()=>{setPlaying(false);setIndex(i=>Math.max(0,i-1));}} disabled={index===0}>上一根</button><button onClick={()=>setPlaying(!playing)}>{playing?'暂停':'播放'}</button><button onClick={()=>{setPlaying(false);setIndex(i=>Math.min(data.frames.length-1,i+1));}} disabled={index===data.frames.length-1}>下一根</button><input aria-label="回放进度" type="range" min="0" max={data.frames.length-1} value={index} onChange={e=>{setPlaying(false);setIndex(Number(e.target.value));}}/><span>{index+1} / {data.frames.length}</span></div><div className="replay-summary"><b>标签 {time(frame.label)} · 最早确认 {time(frame.available_after)}</b><span>{view.regime.label} · {view.note}</span></div><Chart contract={contract} market={market} tf={5} bars={visibleBars} levels={view.levels} structures={view.structures} quote={null} op={op} focus={0} focusTime={frame.label}/><div className="replay-op">{op?<><b>{setups[op.setup]} · {names[op.status]}</b><p>{op.reason}</p><span>触发 {price(op.entry)}　失效 {price(op.stop)}　T1 {price(op.targets[0]?.price)}　T2 {price(op.targets[1]?.price)}</span></>:<span>截至该时刻尚无符合条件的候选。</span>}</div></>}</section></div>;
+  return <div className="modal-backdrop"><section className="replay-modal panel" role="dialog" aria-modal="true" aria-label="历史K线回放"><div className="panel-head"><h2>历史回放 · {shortContract(contract)}</h2><button onClick={onClose} aria-label="关闭回放">关闭 ×</button></div><div className="replay-controls"><input aria-label="回放日期" type="date" value={day} onChange={e=>setDay(e.target.value)}/><button disabled={loading} onClick={load}>{loading?'加载中…':'加载日期'}</button><span>终态K线 · 确认声音暂停</span></div><div className="replay-caption">{data?.description||'仅使用当前电脑已经采集的数据。回放不会调用 Wind 下单或修改真实事件。'}</div>{error&&<p className="replay-error">{error}</p>}{frame&&<><div className="replay-timeline"><button onClick={()=>{setPlaying(false);setIndex(i=>Math.max(0,i-1));}} disabled={index===0}>上一根</button><button onClick={()=>setPlaying(!playing)}>{playing?'暂停':'播放'}</button><button onClick={()=>{setPlaying(false);setIndex(i=>Math.min(data.frames.length-1,i+1));}} disabled={index===data.frames.length-1}>下一根</button><input aria-label="回放进度" type="range" min="0" max={data.frames.length-1} value={index} onChange={e=>{setPlaying(false);setIndex(Number(e.target.value));}}/><span>{index+1} / {data.frames.length}</span></div><div className="replay-summary"><b>标签 {time(frame.label)} · 最早确认 {time(frame.available_after)}</b><span>{view.regime.label} · {view.note}</span></div><Chart contract={contract} market={market} tf={5} bars={visibleBars} asOf={frame.available_after} levels={view.levels} structures={view.structures} quote={null} op={op} focus={0} focusTime={frame.label}/><div className="replay-op">{op?<><b>{setups[op.setup]} · {names[op.status]}</b><p>{op.reason}</p><span>触发 {price(op.entry)}　失效 {price(op.stop)}　T1 {price(op.targets[0]?.price)}　T2 {price(op.targets[1]?.price)}</span></>:<span>截至该时刻尚无符合条件的候选。</span>}</div></>}</section></div>;
 }
 
 export function App({preview=false}){
@@ -287,7 +352,9 @@ export function App({preview=false}){
     document.addEventListener('visibilitychange',touch);
     return()=>{clearInterval(timer);document.removeEventListener('visibilitychange',touch);};
   },[contract,tf,replayOpen,item?.contract,preview]);
-  const liveBars=(item?.live_bars?.[tf]||[]).filter(b=>b.end>(bars.at(-1)?.end||''));
+  const liveSeries=item?.live_bars?.[tf];
+  const lastClosed=bars.at(-1)?.end||'';
+  const liveBars=useMemo(()=>liveSeries?.filter(b=>b.end>lastClosed)||EMPTY_BARS,[liveSeries,lastClosed]);
   const liveBar=liveBars.at(-1);
   const chartVersion=item?.bar_versions?.[tf]??state?.metrics.bar_batches;
   const lastFive=tf===5?item?.last_bar:null;
@@ -353,8 +420,7 @@ export function App({preview=false}){
       <section className="chart-panel panel"><div className="panel-head"><div className="chart-title"><h2>{shortContract(contract)} <span>价格结构</span></h2><button disabled={preview} className="text-button" onClick={()=>{setChoice(item?.contract||'');setEdit(!edit);}}>切换合约 ↗</button></div><div className="segments">{[1,5,15].map(n=><button key={n} disabled={preview&&n===1} title={preview&&n===1?'样本未载入1分钟线':undefined} className={tf===n?'active':''} onClick={()=>setTf(n)}>{n}分钟</button>)}</div></div>
       {edit&&<form className="contract-form" onSubmit={e=>{e.preventDefault();saveChoice();}}><label>真实月份合约<input value={choice} onChange={e=>setChoice(e.target.value.toUpperCase())} placeholder={root+'2612.'+(item?.market.exchange||'CFE')} aria-label="真实月份合约"/></label><button disabled={busy} type="submit">应用</button><button disabled={busy} type="button" onClick={()=>saveChoice(true)}>恢复每日主力</button><button type="button" onClick={()=>setEdit(false)}>取消</button></form>}
       <div className="chart-stats"><span>{item?.market.name} <b>{item?.market.unit}</b></span><span>背景 <b>15分钟</b></span><span>确认 <b>5分钟收盘</b></span><span>买一 <b>{price(item?.quote.rt_bid1)}</b></span><span>卖一 <b>{price(item?.quote.rt_ask1)}</b></span><span className="right chart-times"><span>已收盘 · {time(bars.at(-1)?.end)}</span>{liveBar&&<span className="live-candle-note" title={liveBar.source==='quotes_only'?'当前仅含已接收报价，等待Wind分钟数据补齐开高低价':'Wind盘中快照及实时报价预览，最终OHLC以收盘数据为准'}>{liveBar.forming?'未收盘':'待核对'} · {time(liveBar.end)}{liveBar.source==='quotes_only'?' · 局部报价':''}</span>}</span></div>
-      <Chart contract={contract} market={item?.market} tf={tf} bars={bars} levels={item?.levels} structures={item?.structures} quote={item?.quote} op={currentOp} focus={focus} provisional={liveBars} onLatest={()=>setSelectedOp(null)} preview={preview}/>
-      <div className="chart-legend"><span><i className="red"/>上涨</span><span><i className="green"/>下跌</span><span><i className="blue"/>5分钟确认结构</span><span className="live-candle-note">金边K线为盘中预览</span><span className="right">i 内部 / s 波段 · H 高 / L 低 · {tf===5?'确认后回标':'5m标注来自5分钟'}</span></div>
+      <Chart contract={contract} market={item?.market} tf={tf} bars={bars} fiveMinuteBars={cardBars[contract]} lastFiveBar={item?.last_bar} asOf={state?.server_time} levels={item?.levels} structures={item?.structures} quote={item?.quote} op={currentOp} focus={focus} provisional={liveBars} onLatest={()=>setSelectedOp(null)} preview={preview}/>
       {currentOp?<div className="thesis" id="opportunity-detail"><div><span className={'direction '+(currentOp.direction===1?'up':'down')}>{currentOp.direction===1?'多':'空'}</span><h3>{setups[currentOp.setup]}</h3><span className="muted">{names[currentOp.status]}</span></div><p>{currentOp.reason}</p><div className="thesis-grid"><div><small>触发价</small><b>{price(currentOp.entry)}</b></div><div><small>结构失效</small><b>{price(currentOp.stop)}</b></div>{[0,1].map(i=><div key={i}><small>T{i+1} · {currentOp.targets[i]?.label||'待确认'}</small><b>{price(currentOp.targets[i]?.price)}</b></div>)}</div><div className="facts"><span>冻结关键位 {price(currentOp.level)} · {currentOp.level_name}</span><span>止损距离 {number(currentOp.risk)} {item?.market.unit}</span><span>距触发 {currentOp.entry&&item?.quote.rt_last>0?number(Math.abs(item.quote.rt_last-currentOp.entry)):'—'} {item?.market.unit}</span></div><OpportunityEvidence op={currentOp} instrument={item} connected={guide.live && quoteReady(item,clock)}/></div>:<div className="context-box"><div><span className="eyebrow">当前观察</span><h3>{item?.note||'等待行情就绪'}</h3><p>交易日 {item?.trading_day} · 先看15分钟环境，再等5分钟确认。</p></div><div className="context-metrics"><span>效率比<b>{item?.regime.efficiency?.toFixed(2)||'—'}</b></span><span>EMA斜率 / ATR<b>{item?.regime.slope?.toFixed(2)||'—'}</b></span></div></div>}
     </section><MarketContextPanel source={marketContext} clock={clock} instruments={state?.instruments} connected={connected&&!state?.offline&&!replayOpen} preview={preview} layout="rail"/><aside id="opportunity-radar" className="panel opportunity-panel"><div className="panel-head"><h2>{preview?'历史机会':'机会雷达'} <span className="count">{ops.length}</span></h2><button className="text-button" onClick={()=>setHistory(!history)}>{history?'只看当前':'包含历史'}</button></div><div className="aside-hint">{preview?'11月13日规则回放 · 历史静默':'盘中预警 · 收盘确认 · 条件失效'}</div><div className="op-list">{ops.length?ops.map(op=><Opportunity key={op.id} op={op} tone={atmosphere.actionable.some(o=>o.id===op.id)?'action':atmosphere.watching.some(o=>o.id===op.id)?'watch':null} market={state?.instruments.find(x=>x.contract===op.contract)?.market} selected={op.id===selectedOp} last={state?.instruments.find(x=>x.contract===op.contract)?.quote.rt_last} onClick={()=>selectOp(op)}/>):<div className="empty-state"><div className="empty-radar"><i/><i/><i/><b>＋</b></div><h3>{preview?'收盘快照，无当前入场信号':'等待条件完成'}</h3><p>市场状态、结构位置和后续确认一致时，机会会出现在这里。</p><ul>{state?.instruments.map(x=><li key={x.root}><b>{x.root}</b> {x.ready?x.note:x.status}</li>)}</ul></div>}</div><div className="aside-foot"><span className="small-dot"/>{preview?'历史预览 · 全部提醒静默':sound?'新的收盘确认将播放一次声音':'预警静默 · 点击顶部启用确认声音'}</div></aside></main>
     {optionsVisible&&<OptionsWorkbench root={root} opportunityId={currentOp?.id} context={state.options.contexts?.[root]}/>}

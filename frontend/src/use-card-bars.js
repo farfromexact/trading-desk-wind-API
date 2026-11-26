@@ -26,7 +26,8 @@ export function useCardBars(instruments = EMPTY, selectedFive, preview, api) {
     if (!latest.current.instruments.some(current => sameSeries(current, item))) return;
     const old = entries.current.get(item.contract);
     const compact = Array.isArray(rows)
-      ? rows.filter(b => typeof b?.end === 'string' && Number.isFinite(b.close)).map(({end, close}) => ({end, close}))
+      ? rows.filter(b => typeof b?.end === 'string' && Number.isFinite(b.close))
+        .map(({end, open, high, low, close}) => ({end, open, high, low, close}))
       : old && old.trading_day === item.trading_day ? old.rows : EMPTY;
     const retry = !Array.isArray(rows) || !compact.length;
     const {contract, trading_day, last_bar, bar_versions} = item;

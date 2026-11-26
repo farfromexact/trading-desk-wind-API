@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {normalizedMove,percentile,styleEvidence,sourceQuality,headline,radarItems,recentEvents,contracts,etfQuality,etfFlowReading} from './model.js';
+import {normalizedMove,percentile,styleEvidence,sourceQuality,headline,radarItems,recentEvents,contracts,etfQuality,etfFlowReading,displayUsable} from './model.js';
 
 const at='2026-11-17T10:30:00+08:00';
 const row=value=>({value,time:at});
@@ -45,6 +45,83 @@ test('live card returns use the dated full close, independently of old context p
   assert.ok(Math.abs(item.pct-5)<1e-9);assert.equal(item.usable,true);assert.equal(item.basis,'较前收盘');
   assert.match(item.basisDetail,/2026-11-16/);assert.match(item.basisDetail,/-2.00%/);
   snap.bars={};assert.equal(contracts(snap)[0].pct,null);assert.equal(contracts(snap)[0].usable,false);
+});
+const preopen='2026-11-18T08:58:13+08:00';
+const bar=(day,hm,close)=>({end:`${day}T${hm}:00+08:00`,open:close,high:close,low:close,close});
+const index={
+  root:'IM', contract:'IM2612.CFE', trading_day:'2026-11-18', phase:'盘前', ready:false,
+  market_time:'2026-11-18T08:55:00+08:00', quote:{rt_last:0},
+  market:{name:'中证1000',sessions:[['09:30','11:30'],['13:00','15:00']]},
+};
+const snapshotAt=(time,instrument,bars,context={})=>({
+  mode:'live',state:{server_time:time,feed_state:'Wind 已连接',instruments:[instrument]},
+  context,bars:{[instrument.contract]:bars},
+});
+test('preopen placeholder zero uses the previous session close and its own earlier baseline',()=>{
+  const history=[
+    bar('2026-11-16','15:00',6105),
+    bar('2026-11-17','14:55',6030.2),
+    bar('2026-11-17','15:00',6023),
+  ];
+  const snap=snapshotAt(preopen,index,history);
+  const [item]=contracts(snap);
+  assert.equal(item.price,6023);
+  assert.equal(item.priceSource,'bar');
+  assert.equal(item.changeTime,history.at(-1).end);
+  assert.equal(item.prevClose,6105);
+  assert.equal(item.pct.toFixed(2),'-1.34');
+  assert.equal(item.quoteUsable,false);
+  assert.equal(item.quality,'最近快照');
+  assert.deepEqual(item.chart.bars,history.slice(1));
+  assert.equal(headline(snap).phase,'盘前');
+  assert.equal(recentEvents(snap).end,Date.parse(history.at(-1).end));
+  const [withoutBaseline]=contracts(snapshotAt(preopen,index,history.slice(1)));
+  assert.equal(withoutBaseline.pct,null);
+  const [withoutHistory]=contracts(snapshotAt(preopen,index,[]));
+  assert.equal(withoutHistory.price,null);
+  assert.equal(withoutHistory.pct,null);
+});
+test('commodity shows Friday night across midnight at Monday open, then accepts the first completed day bar',()=>{
+  const fridayClose=bar('2026-11-20','15:00',581.4);
+  const night=[bar('2026-11-20','21:05',585),bar('2026-11-21','02:30',590.5)];
+  const sc={
+    root:'SC',contract:'SC2701.INE',trading_day:'2026-11-23',phase:'交易中',ready:true,
+    market_time:'2026-11-23T09:03:33+08:00',quote:{rt_last:587},
+    market:{name:'原油',night:['21:00','02:30'],sessions:[['09:00','10:15'],['10:30','11:30'],['13:30','15:00']]},
+  };
+  const intraday=bar('2026-11-23','09:05',587.2);
+  const [early]=contracts(snapshotAt('2026-11-23T09:03:35+08:00',sc,[fridayClose,...night,intraday]));
+  assert.equal(early.price,587);
+  assert.equal(early.prevClose,581.4);
+  assert.equal(early.quoteUsable,true);
+  assert.equal(early.chart.session.name,'夜盘');
+  assert.deepEqual(early.chart.bars,night);
+  assert.equal(early.sourceSession.name,'日盘');
+  const [completed]=contracts(snapshotAt('2026-11-23T09:06:08+08:00',{
+    ...sc,market_time:'2026-11-23T09:06:07+08:00',
+  },[fridayClose,...night,intraday]));
+  assert.equal(completed.chart.session.name,'日盘');
+  assert.deepEqual(completed.chart.bars,[intraday]);
+  assert.deepEqual(completed.chart.contextBars,night);
+  assert.equal(completed.chart.contextSession.name,'夜盘');
+});
+test('dated cash context is visible preopen and cannot act as a live reading after open',()=>{
+  const time='2026-11-17T15:00:00+08:00';
+  const context={
+    rotation:{breadth_gap:{value:-23,time}},
+    breadths:[{code:'000852.SH',value:30,time},{code:'000300.SH',value:53,time}],
+  };
+  const flow={value:0,unit:'元',frequency:'intraday_cumulative',time};
+  const before=snapshotAt(preopen,index,[],context);
+  assert.equal(etfQuality(flow,before),'最近快照');
+  assert.equal(displayUsable(etfQuality(flow,before)),true);
+  assert.equal(etfFlowReading(flow,before).value,0);
+  assert.equal(etfFlowReading(flow,before).caption,'最近快照 · 11-17 15:00');
+  assert.match(headline(before).items[0].evidence,/30\.0%（11-17 15:00）/);
+  const after=snapshotAt('2026-11-18T09:30:17+08:00',{...index,phase:'交易中'},[],context);
+  assert.equal(displayUsable(etfQuality(flow,after)),false);
+  assert.equal(etfFlowReading(flow,after).value,null);
+  assert.equal(headline(after).items[0].evidence,'1000 / 300 上涨广度 — / —');
 });
 test('ETF old-day flows and failed context reads never appear current',()=>{
   const snap={state:{server_time:at,instruments:[{root:'IM',phase:'交易中'}]},context:{}};

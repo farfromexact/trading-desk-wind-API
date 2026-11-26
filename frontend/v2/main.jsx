@@ -1,7 +1,8 @@
 import React, {useEffect, useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {contracts, headline, styleEvidence, radarItems, recentEvents, optionSummary, finite, signed, clock, clockSeconds, tone, viewTime, equityPhase, sourceQuality, sourceUsable, etfFlowReading, metricQuality} from './model.js';
+import {contracts, headline, styleEvidence, radarItems, recentEvents, optionSummary, finite, signed, clock, clockSeconds, datedClock, tone, viewTime, equityPhase, sourceQuality, reviewQuality, displayUsable, etfFlowReading, contextMetricQuality} from './model.js';
 import {startLiveFeed, feedHealth} from './live-feed.js';
+import {CANDLE_WINDOW, candleLayout} from './candle-layout.js';
 import {MarketCardGrid} from '../shared/market-cards.jsx';
 import './style.css';
 
@@ -16,17 +17,19 @@ function StylePanel({snapshot}) {
   const phase=equityPhase(snapshot),asof=viewTime(snapshot);
   const style=styleEvidence(snapshot.context,asof,phase);
   const small=snapshot.context.breadths?.find(b=>b.code==='000852.SH'),large=snapshot.context.breadths?.find(b=>b.code==='000300.SH');
-  const breadthDisplay=b=>finite(b?.value)&&!snapshot.context.error&&sourceUsable(metricQuality(b,asof,phase))?b.value.toFixed(1)+'%':'—';
+  const metric=(row,minutes)=>contextMetricQuality(snapshot.context,row,asof,phase,minutes);
+  const breadthDisplay=b=>finite(b?.value)&&displayUsable(metric(b))?b.value.toFixed(1)+'%':'—';
+  const review=phase!=='交易中';
   return <section className="panel style-panel" id="style">
-    <SectionTitle number="02" title="风格，看证据是否同向" meta="1000 vs 300"/>
+    <SectionTitle number="02" title="风格，看证据是否同向" meta={review?'1000 vs 300 · 最近快照':'1000 vs 300'}/>
     <div className="style-intro"><div><span className="eyebrow">市场参与度</span><h3>{style.label}</h3></div><span className="plain-badge">{style.mixed?'存在分歧':style.confirmed?'2 项方向一致':'证据待齐'}</span></div>
     <div className="style-axis"><div className="axis-labels"><span>大盘占优</span><span>广度差 · 非综合评分</span><span>小盘占优</span></div>
       <div className="axis-track"><i className="axis-center"/>{style.dot!==null&&<i className="axis-dot" style={{left:`${style.dot}%`}}/>}</div>
       <div className="axis-values"><span>沪深300 <b>{breadthDisplay(large)}</b></span><span>上涨占比</span><span>中证1000 <b>{breadthDisplay(small)}</b></span></div>
     </div>
     <div className="evidence-grid">{style.rows.map((r,n)=><div key={r.key} className="evidence-cell">
-      <div className="evidence-label"><span className="evidence-icon">{['◉','↗','▥'][n]}</span>{r.label}<small>{n===0?'当前':'近5m'}</small></div>
-      <strong>{r.display}</strong><span>{r.verdict}{!r.calibrated?' · 未校准':''}</span>
+      <div className="evidence-label"><span className="evidence-icon">{['◉','↗','▥'][n]}</span>{r.label}<small>{n===0?(review?'快照':'当前'):'近5m'}</small></div>
+      <strong>{r.display}</strong><span>{r.verdict}{!r.calibrated?' · 未校准':''}{review&&r.usable&&<small> · {datedClock(r.time)}</small>}</span>
     </div>)}</div>
     <p className="quiet-note">{style.description}</p>
     <div className="etf-summary">
@@ -43,8 +46,8 @@ function StylePanel({snapshot}) {
     {(!snapshot.context.monitoring||snapshot.context.error)&&<p className="quiet-note">{snapshot.context.error||'盘面背景自动更新未开启；此页只读取已有缓存。'}</p>}
     <button className="expand-button" onClick={()=>setExpanded(!expanded)} aria-expanded={expanded}>{expanded?'收起':'展开'}广度、成交与申赎明细 <span>{expanded?'−':'+'}</span></button>
     {expanded&&<div className="style-details"><div className="breadth-list">{(snapshot.context.breadths||[]).map(b=><div key={b.code}>
-      <span>{b.name}<small>{b.scope==='board'?'Wind板块聚合':'指数样本'}</small></span><div className="breadth-meter"><i style={{width:`${breadthDisplay(b)==='—'?0:Math.max(0,Math.min(100,b.value??0))}%`}}/></div><b>{breadthDisplay(b)}</b><small>{breadthDisplay(b)==='—'?metricQuality(b,asof,phase):`5m ${signed(b.change_pp,1)}pp`}</small>
-    </div>)}</div><div className="detail-facts">{Object.entries(snapshot.context.activity||{}).map(([root,a])=><p key={root}><span>{root} 15m成交 / 20日同刻中位数 · {clock(a.time)}</span><b>{finite(a.value)&&!snapshot.context.error&&sourceUsable(metricQuality(a,asof,phase,15))?a.value.toFixed(2)+'×':'—'}</b></p>)}{snapshot.context.etfs?.map(e=><p key={e.code}><span>{e.root} 估算净申赎 · {e.daily?.data_date}</span><b>{money(e.daily?.value)}</b></p>)}</div>
+      <span>{b.name}<small>{b.scope==='board'?'Wind板块聚合':'指数样本'}</small></span><div className="breadth-meter"><i style={{width:`${breadthDisplay(b)==='—'?0:Math.max(0,Math.min(100,b.value??0))}%`}}/></div><b>{breadthDisplay(b)}</b><small>{breadthDisplay(b)==='—'?metric(b):review?datedClock(b.time):`5m ${signed(b.change_pp,1)}pp`}</small>
+    </div>)}</div><div className="detail-facts">{Object.entries(snapshot.context.activity||{}).map(([root,a])=><p key={root}><span>{root} 15m成交 / 20日同刻中位数 · {datedClock(a.time)}</span><b>{finite(a.value)&&displayUsable(metric(a,15))?a.value.toFixed(2)+'×':'—'}</b></p>)}{snapshot.context.etfs?.map(e=><p key={e.code}><span>{e.root} 估算净申赎 · {e.daily?.data_date}</span><b>{money(e.daily?.value)}</b></p>)}</div>
     <p className="quiet-note">日内累计来自超大单与大单的买卖额差。日频截面按数据日期展示，单位缩放待核验。估算净申赎按份额变化乘单位净值计算。</p></div>}
   </section>;
 }
@@ -87,40 +90,88 @@ function Radar({items,setSelected}) {
 
 function CandleChart({item}) {
   const [structure,setStructure]=useState(false),[hover,setHover]=useState(null);
-  const bars=item.daily;
-  if(!bars.length)return <div className="empty-state">当前合约暂无可用分钟线。</div>;
-  const levels=(item.levels||[]).filter(l=>finite(l.price)&&l.known_at<=item.market_time&&['前日高点','前日低点'].includes(l.name));
-  const low=Math.min(...bars.map(b=>b.low),...levels.map(l=>l.price)),high=Math.max(...bars.map(b=>b.high),...levels.map(l=>l.price));
-  const range=high-low||1,y=v=>225-(v-low)/range*195,x=n=>28+n/Math.max(1,bars.length-1)*690;
-  const selected=hover===null?bars.at(-1):bars[hover]||bars.at(-1);
-  const structures=(item.structures||[]).filter(e=>e.kind==='structure'&&e.known_at<=item.market_time&&e.occurred_at>=bars[0].end).slice(-6);
-  return <><div className="chart-controls"><span><b>{short(item.contract)}</b> · 5分钟已完成K线</span><label><input type="checkbox" checked={structure} onChange={e=>setStructure(e.target.checked)}/>结构层</label></div>
-    <div className="ohlc"><b>{clock(selected.end)}</b><span>开 {price(selected.open,item)}</span><span>高 {price(selected.high,item)}</span><span>低 {price(selected.low,item)}</span><span>收 {price(selected.close,item)}</span></div>
-    <svg className="candles" viewBox="0 0 820 270" aria-label={`${item.root} 5分钟K线`} role="img" onMouseLeave={()=>setHover(null)}>
-      {[0,.25,.5,.75,1].map(p=><g key={p}><line x1="16" x2="735" y1={30+p*195} y2={30+p*195} stroke="var(--line)"/><text x="746" y={34+p*195} className="axis-text">{price(high-p*range,item)}</text></g>)}
-      {levels.map(l=><g key={l.id}><line x1="16" x2="735" y1={y(l.price)} y2={y(l.price)} stroke="var(--muted)" strokeDasharray="4 5" opacity=".65"/><text x="25" y={y(l.price)-6} className="axis-text">{l.name} {price(l.price,item)}</text></g>)}
-      {bars.map((b,n)=><g key={b.end} onMouseEnter={()=>setHover(n)}><rect x={x(n)-10} y="20" width="20" height="220" fill="transparent"/>
-        <line x1={x(n)} x2={x(n)} y1={y(b.high)} y2={y(b.low)} stroke={b.close>=b.open?'var(--up)':'var(--down)'}/>
-        <rect x={x(n)-4} width="8" y={Math.min(y(b.open),y(b.close))} height={Math.max(1,Math.abs(y(b.open)-y(b.close)))} fill={b.close>=b.open?'var(--up)':'var(--down)'}/>
+  const {bars:sessionBars,session,time,contextBars,contextSession}=item.chart;
+  const livePrice=item.quoteUsable?item.price:null;
+  const latestTrade=finite(livePrice)?<strong className="chart-live-price">最新成交 {price(livePrice,item)} · {clockSeconds(item.changeTime)}</strong>:null;
+  if(!sessionBars.length)return <><div className="chart-controls"><b>{short(item.contract)}</b>{latestTrade}</div><div className="empty-state">等待原后台的完整5分钟线缓存。</div></>;
+
+  const bars=[...contextBars,...sessionBars.slice(-CANDLE_WINDOW)];
+  const layout=candleLayout(bars,contextBars.length,livePrice,item.market?.tick_size);
+  const {left,right,top,bottom,x,y,low,high,step,bodyWidth,divider,labelIndices}=layout;
+  const inRange=value=>value>=low&&value<=high;
+  const waitingForSession=item.quoteUsable&&session.start!==item.sourceSession.start;
+  const levels=(item.levels||[]).filter(l=>finite(l.price)&&l.known_at<=time&&['前日高点','前日低点'].includes(l.name));
+  const offscreen=levels.filter(l=>!inRange(l.price));
+  const hoveredIndex=bars.findIndex(b=>b.end===hover);
+  const selected=bars[hoveredIndex]||bars.at(-1);
+  const barIndices=new Map(bars.map((bar,index)=>[bar.end,index]));
+  const structures=(item.structures||[]).filter(e=>e.kind==='structure'&&e.known_at<=(item.changeTime||time)
+    &&barIndices.has(e.occurred_at)&&inRange(e.price)).slice(-6);
+  const chartLabel=`${item.root} 最近${bars.length}根5分钟K线 · ${session.name}截至 ${datedClock(time)}`;
+
+  return <><div className="chart-controls"><span><b>{short(item.contract)}</b> · {session.name}5分钟线 · 截至 {datedClock(time)}</span><label><input type="checkbox" checked={structure} onChange={e=>setStructure(e.target.checked)}/>结构层</label></div>
+    {waitingForSession&&<p className="quiet-note">等待{item.sourceSession.name}首根完整5分钟线。</p>}
+    <div className="ohlc"><b>{datedClock(selected.end)}</b><span>开 {price(selected.open,item)}</span><span>高 {price(selected.high,item)}</span><span>低 {price(selected.low,item)}</span><span>收 {price(selected.close,item)}</span>{latestTrade}</div>
+    {contextBars.length>0&&<div className="chart-sessions">
+      <span>{contextSession.name}截至 {datedClock(contextBars.at(-1).end)}</span>
+      <span>{session.name}自 {datedClock(sessionBars[0].end)}</span>
+    </div>}
+    <svg className="candles" viewBox="0 0 820 270" aria-label={chartLabel} role="img" onMouseLeave={()=>setHover(null)}>
+      {divider!==null&&<g>
+        <rect x={left} y={top} width={divider-left} height={bottom-top} fill="var(--muted)" opacity=".055"/>
+        <line x1={divider} x2={divider} y1={top} y2={bottom} stroke="var(--muted)" strokeDasharray="3 4" opacity=".6"/>
+      </g>}
+      {[0,.25,.5,.75,1].map(p=>{
+        const value=high-p*(high-low), at=y(value);
+        return <g key={p}><line x1={left} x2={right} y1={at} y2={at} stroke="var(--line)"/><text x={right+11} y={at+4} className="axis-text">{price(value,item)}</text></g>;
+      })}
+      {levels.filter(l=>inRange(l.price)).map(l=><g key={l.id} pointerEvents="none">
+        <line x1={left} x2={right} y1={y(l.price)} y2={y(l.price)} stroke="var(--muted)" strokeDasharray="4 5" opacity=".65"/>
+        <text x={left+7} y={y(l.price)-6} className="axis-text">{l.name} {price(l.price,item)}</text>
       </g>)}
-      {structure&&structures.map(e=>{const n=bars.findIndex(b=>b.end>=e.occurred_at);return n<0?null:<g key={e.id}><circle cx={x(n)} cy={y(e.price)} r="4" fill="var(--text)"/><text x={x(n)} y={y(e.price)-12} textAnchor="middle" className="axis-text">{e.scale==='internal'?'i':'s'} {e.label}</text></g>;})}
-      {finite(item.price)&&item.price>=low&&item.price<=high&&<line x1="16" x2="735" y1={y(item.price)} y2={y(item.price)} stroke="var(--text)" opacity=".35" strokeDasharray="2 3"/>}
-      {[0,Math.floor(bars.length/2),bars.length-1].map(n=><text key={n} x={x(n)} y="256" textAnchor="middle" className="axis-text">{clock(bars[n].end)}</text>)}
-    </svg><p className="quiet-note">默认只显示前日高低与快照价格。{structure?'已展开最近6个已确认结构；标签锚点是发生时间，确认时间见事件流。':'悬停查看单根价格，勾选结构层查看确认标记。'}</p></>;
+      {hoveredIndex>=0&&<line x1={x(hoveredIndex)} x2={x(hoveredIndex)} y1={top} y2={bottom} stroke="var(--muted)" opacity=".5" pointerEvents="none"/>}
+      {bars.map((bar,index)=>{
+        const center=x(index);
+        const color=bar.close>=bar.open?'var(--up)':'var(--down)';
+        return <g key={bar.end} opacity={index < contextBars.length ? 0.62 : 1} onMouseEnter={()=>setHover(bar.end)}>
+          <rect x={center-step/2} y={top} width={step} height={bottom-top} fill="transparent"/>
+          <line x1={center} x2={center} y1={y(bar.high)} y2={y(bar.low)} stroke={color}/>
+          <rect className="candle-body" x={center-bodyWidth/2} width={bodyWidth} y={Math.min(y(bar.open),y(bar.close))}
+            height={Math.max(1,Math.abs(y(bar.open)-y(bar.close)))} fill={color}/>
+        </g>;
+      })}
+      {structure&&structures.map(e=>{
+        const center=x(barIndices.get(e.occurred_at));
+        return <g key={e.id} pointerEvents="none"><circle cx={center} cy={y(e.price)} r="4" fill="var(--text)"/><text x={center} y={y(e.price)-12} textAnchor="middle" className="axis-text">{e.scale==='internal'?'i':'s'} {e.label}</text></g>;
+      })}
+      {finite(livePrice)&&<line x1={left} x2={right} y1={y(livePrice)} y2={y(livePrice)} stroke="var(--text)" opacity=".4" strokeDasharray="2 3" pointerEvents="none"/>}
+      {labelIndices.map(index=><text key={index} x={x(index)} y={bottom+27} textAnchor="middle" className="axis-text">{clock(bars[index].end)}</text>)}
+    </svg>
+    {offscreen.length>0&&<div className="chart-references" aria-label="图外参考位">{offscreen.map(level=><span key={level.id}>
+      <span aria-hidden="true">{level.price>high?'↑':'↓'}</span> {level.name} {price(level.price,item)}
+    </span>)}</div>}
+    <p className="quiet-note">{finite(livePrice)&&'点线标注最新成交。'}{structure?'显示最近6个已确认结构。':'悬停查看单根K线。'}</p></>;
 }
 
-function Options({snapshot,selected}) {
-  const context=snapshot.options[selected],o=optionSummary(context),phase=context?.phase;
-  const q=sourceQuality(o.time,viewTime(snapshot),phase,15);
-  const usable=sourceUsable(q)&&(snapshot.mode!=='live'||phase!=='交易中'||context?.ready);
-  const status=sourceUsable(q)?o.status||'估值未就绪':q;
-  return <div className="option-strip"><div className="option-reading"><span className="eyebrow">{selected} 期权 · {o.expiry||'无已验证覆盖'}</span><h3>{usable?o.label:'期权估值暂不可用'}</h3><p>历史分位待接入；IV−RV 不能单独判断贵或便宜。</p></div><div className="option-gap"><small>IV − RV20</small><strong>{signed(usable?o.gap:null,1)}<span>波动点</span></strong><small>估值 {clockSeconds(o.time)} · {status}</small></div><details><summary>原始指标与口径</summary><p>{usable?'当前估值':'保留的历史估值'}：IV {finite(o.iv)?(o.iv*100).toFixed(2)+'%':'—'} · RV20 {finite(o.rv)?(o.rv*100).toFixed(2)+'%':'—'} · 25Δ Put−Call {signed(o.skew,1)} 波动点</p><p>期限：{o.expiry||'—'}。RV20来自同一标的已完成日收益。隐含与已实现波动面向不同时间区间；估值和历史数据沿用原后台。</p></details></div>;
+function Options({snapshot,item,paused}) {
+  const context=snapshot.options[item.root];
+  const o=optionSummary(context);
+  const quality=reviewQuality(sourceQuality(o.time,viewTime(snapshot),item.phase,15),item.phase);
+  const live=!paused&&item.phase==='交易中'&&context?.ready&&quality==='快照内有效';
+  const review=!paused&&item.phase!=='交易中'&&displayUsable(quality);
+  const usable=finite(o.gap)&&(live||review);
+  let status='估值待补齐';
+  if(usable)status=live?'实时估值':'最近估值';
+  else if(paused)status='连接暂停';
+  else if(quality==='数据滞后'||quality==='历史数据'||quality==='源时间异常')status=quality;
+  else if(o.status&&o.status!=='实时')status=o.status;
+  return <div className="option-strip"><div className="option-reading"><span className="eyebrow">{item.root} 期权 · {o.expiry||'无已验证覆盖'}</span><h3>{usable?o.label:'期权估值暂不可用'}</h3><p>历史分位待接入；IV−RV 不能单独判断贵或便宜。</p></div><div className="option-gap"><small>IV − RV20</small><strong>{signed(usable?o.gap:null,1)}<span>波动点</span></strong><small>{datedClock(o.time)} · {status}</small></div><details><summary>原始指标与口径</summary><p>IV {finite(o.iv)?(o.iv*100).toFixed(2)+'%':'—'} · RV20 {finite(o.rv)?(o.rv*100).toFixed(2)+'%':'—'} · 25Δ Put−Call {signed(o.skew,1)} 波动点</p><p>期限 {o.expiry||'—'}。RV20来自同一标的已完成日收益。</p></details></div>;
 }
 
-function EventFeed({snapshot}) {
-  const [all,setAll]=useState(false),feed=recentEvents(snapshot);const visible=all?feed.items:feed.items.slice(0,6);
+function EventFeed({snapshot,items}) {
+  const [all,setAll]=useState(false),feed=recentEvents(snapshot,30,items);const visible=all?feed.items:feed.items.slice(0,6);
   return <section className="panel events-panel" id="events"><SectionTitle number="05" title="刚才发生了什么" meta="30分钟"/>
-    <p className="event-window">{snapshot.state.instruments.every(i=>i.phase==='午休')?'上午最后30分钟':snapshot.mode==='live'?'最近30分钟':'快照前30分钟'} <b>{clock(feed.start)} — {clock(feed.end)}</b></p>
+    <p className="event-window">{feed.review?'最近行情前30分钟':'最近30分钟'} <b>{datedClock(feed.start)} — {datedClock(feed.end)}</b></p>
     {snapshot.transport?.partial_errors?.events&&<p className="quiet-note">事件读取失败，显示上次记录。</p>}
     <div className="event-list">{visible.map(e=><article key={e.id}><time>{clock(e.known_at)}</time><div><b>{e.text}</b><span>{e.kindLabel} · {e.kindLabel==='快照变化'?'按相邻源快照识别':'按可知时刻排列'}</span></div></article>)}</div>
     {!feed.items.length&&<div className="empty-state">这一时段没有已记录事件。</div>}
@@ -136,16 +187,20 @@ function App() {
   if(!rawSnapshot)return <main className="loading"><span className="brand-mark">W/</span><h1>{connection.error||'正在连接实时后台…'}</h1><p>盘面解说 V2 · 自动重试 · 原看板保持运行</p></main>;
   const snapshot={...rawSnapshot,view_time:new Date(now).toISOString()};
   const health=feedHealth(snapshot,connection,now),paused=disconnect||!health.connected;
-  const items=contracts(snapshot).map(i=>paused?{...i,quoteUsable:false}:i),summary=headline(snapshot,paused,items),active=items.find(i=>i.root===selected)||items[0];
-  const exceptions=items.filter(i=>!i.usable);
+  const items=contracts(snapshot).map(i=>paused?{...i,quoteUsable:false,quality:'连接暂停'}:i);
+  const summary=headline(snapshot,paused,items);
+  const active=items.find(i=>i.root===selected)||items[0];
+  const trading=items.filter(i=>i.phase==='交易中');
+  const exceptions=paused?[]:trading.filter(i=>!i.usable);
   const quoteCount=items.filter(i=>i.quoteUsable).length;
+  const sessionTitle={午休:'午间回顾',盘前:'盘前回顾',盘中:'盘中解说',小节休息:'小节回顾',休市:'休市回顾'}[summary.phase];
   if(!active)return <main className="loading"><h1>等待后台加载监测合约…</h1><p>{health.label}</p></main>;
   return <div className="app-shell">
     <header className="topbar"><a className="brand" href="#"><span className="brand-mark">W/</span><span>盘面解说 <small>WIND DESK</small></span></a><nav><a className="active" href="#">总览</a><a href="#radar">机会</a><a href="#detail">细节</a></nav><div className="top-actions"><span className="version-badge">V2 · 实时</span><a href="http://127.0.0.1:8765/" target="_blank" rel="noreferrer">打开原看板 <Arrow/></a></div></header>
-    <div className="snapshot-bar" title="页面约每3秒读取本机缓存；盘面背景沿用原后台30秒、ETF至少60秒的刷新节奏。"><span><i className={`status-dot ${paused?'status-off':'status-live'}`}/>{disconnect?'断线演示':health.label} · {summary.phase==='盘中'?`${quoteCount}/${items.length} 报价有效`:summary.phase+'回顾'} · {snapshot.state.server_time.slice(0,10).replaceAll('-','.')}</span><span>服务 {clockSeconds(snapshot.state.server_time)} · {active.root} 行情 {clockSeconds(active.market_time)} · 自动更新 <button onClick={()=>setDisconnect(!disconnect)} aria-pressed={disconnect}>{disconnect?'退出断线演示':'试看断线状态'}</button></span></div>
+    <div className="snapshot-bar" title="页面约每3秒读取本机缓存；盘面背景沿用原后台30秒、ETF至少60秒的刷新节奏。"><span><i className={`status-dot ${paused?'status-off':'status-live'}`}/>{disconnect?'断线演示':health.label} · {trading.length?`${quoteCount}/${trading.length} 个交易中品种报价有效`:sessionTitle} · {snapshot.state.server_time.slice(0,10).replaceAll('-','.')}</span><span>服务 {clockSeconds(snapshot.state.server_time)} · {active.root} {active.quoteUsable?`行情 ${clockSeconds(active.changeTime)}`:`快照 ${datedClock(active.changeTime)}`} <button onClick={()=>setDisconnect(!disconnect)} aria-pressed={disconnect}>{disconnect?'退出断线演示':'试看断线状态'}</button></span></div>
     {paused&&<div className="disconnect-banner" role="status">{disconnect?'断线演示：页面与服务连接中断':health.label}，结论暂停。下方仅保留灰色历史数据；恢复后自动更新。</div>}
     <main className={summary.paused?'disconnected':''}>
-      <section className="hero"><div className="hero-heading"><span className="eyebrow">{summary.phase==='午休'?'MIDDAY BRIEF / 上午小结':summary.phase==='盘中'?'MARKET BRIEF / 盘中解说':'SESSION BRIEF / 休市回顾'}</span><button className="text-button" onClick={()=>setRules(!rules)} aria-expanded={rules}>结论怎么算 <span>ⓘ</span></button></div>
+      <section className="hero"><div className="hero-heading"><span className="eyebrow">{sessionTitle}</span><button className="text-button" onClick={()=>setRules(!rules)} aria-expanded={rules}>结论怎么算 <span>ⓘ</span></button></div>
         <h1>{summary.title}</h1><p className="hero-subtitle">{summary.subtitle||'源状态恢复前，不生成方向判断。'}</p>
         <div className="headline-evidence">{summary.items.map(i=><a href={'#'+i.target} key={i.slot}><span className="headline-slot">{i.slot}</span><div><b className={i.tone}>{i.title}</b><small>{i.evidence}</small></div><Arrow/></a>)}</div>
         {rules&&<div className="rules-box"><b>有证据才下结论；这些是展示规则。</b><p>广度差达到20个百分点、相对同刻成交偏向达到1.15×时描述偏向；价格只报告近5分钟实际价差，不冒充统计显著。三维冲突显示“证据分歧”，不合成评分。阈值为待校准初值。</p><p>八张卡以实时价对比前一完整日盘收盘；期货相对昨结算的涨跌幅可能不同，悬停可核对后台原值。商品“领跌”只比较 AG / AU / SC，不比较跨资产风险；T、TL 同涨才写“国债期货走高”。机会状态完全沿用原策略，历史触价不升级为实时确认。</p><p>历史日收益标准差、IV / skew 同期限分位尚未接入；缺失保持缺失。报价保留15秒门槛及后台健康检查；分钟指标按完整K线节奏检查，午休和收盘标为回顾；断线暂停摘要。</p></div>}
@@ -157,7 +212,7 @@ function App() {
         <div className="section-foot">涨跌幅：现价 / 前一完整日盘收盘 − 1 · 曲线：5分钟收盘价　<span>期货与昨结算口径可能不同；历史波动基准待接入</span></div>
       </section>
       <div className="main-grid"><StylePanel snapshot={snapshot}/><Radar items={items} setSelected={setSelected}/></div>
-      <div className="detail-grid" id="detail"><section className="panel chart-panel"><SectionTitle number="04" title="需要时，再看细节" meta="点击上方品种切换"/>{snapshot.transport?.bars_loading?.length>0&&<p className="quiet-note">正在载入 {snapshot.transport.bars_loading.length} 个品种的分钟线缓存，实时报价独立更新。</p>}<CandleChart key={active.contract} item={active}/><Options snapshot={snapshot} selected={active.root}/></section><EventFeed snapshot={snapshot}/></div>
+      <div className="detail-grid" id="detail"><section className="panel chart-panel"><SectionTitle number="04" title="需要时，再看细节" meta="点击上方品种切换"/>{snapshot.transport?.bars_loading?.includes(active.contract)&&<p className="quiet-note">正在载入 {short(active.contract)} 的分钟线缓存。</p>}<CandleChart key={active.contract} item={active}/><Options snapshot={snapshot} item={active} paused={paused}/></section><EventFeed snapshot={snapshot} items={items}/></div>
       <footer><span>结论 → 证据 → 细节</span><p>只读 WindPy 缓存 · 原策略、提醒与行情采集保持原样</p><span>WIND DESK / V2</span></footer>
     </main>
   </div>;

@@ -92,6 +92,14 @@
 .etf-reference{gap:2px 10px;line-height:1.45}
 .etf-monitor-error{border-top:1px solid #394850;padding:8px 14px;font-size:11px}
 .desk-workspace>.chart-panel{grid-area:chart;min-width:0}
+.structure-controls{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;padding:5px 16px;background:#151e26;border-bottom:1px solid #293843;color:#a4b8c4;font-size:11px}
+.structure-controls .segments button{padding:3px 9px;font-size:11px}
+.structure-controls label{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
+.structure-controls input{width:13px;height:13px;min-height:0;margin:0;accent-color:#83b8a8}
+.structure-controls label:has(input:disabled){opacity:.55}
+.chart-legend .structure-key{display:inline-block;width:16px;height:0;border-radius:0;border-top:2px solid #aabfce;background:none}
+.chart-legend .structure-key.internal{border-top:1px dashed #aabfce}
+.chart-wrap .chart-structure-readout{max-width:calc(100% - 170px);white-space:normal;pointer-events:none}
 .desk-workspace>.market-context{grid-area:context;min-width:0;margin-bottom:0}
 .desk-workspace>.opportunity-panel{grid-area:opportunities;min-width:0}
 .desk-preview .connection{color:#cfba8d}

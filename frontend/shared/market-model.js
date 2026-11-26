@@ -41,7 +41,7 @@ export function sourceQuality(time, asof, phase='', maxAge=CFG.contextAge, close
   return '快照内有效';
 }
 export const sourceUsable = q => ['快照内有效','午间快照','小节休息快照','收盘快照'].includes(q);
-const reviewPhase = phase => ['盘前','午休','小节休息','已收盘','非交易日'].includes(phase);
+export const reviewPhase = phase => ['盘前','午休','小节休息','已收盘','非交易日'].includes(phase);
 export const displayUsable = q => sourceUsable(q)||q==='最近快照';
 
 export function reviewQuality(quality, phase) {
@@ -80,7 +80,7 @@ function cardTrend(history) {
 }
 
 // Identify the session for the detail chart and the previous-close reference.
-function chartSession(stamp, market) {
+export function chartSession(stamp, market) {
   if(!stamp)return null;
   const day=dayOf(stamp);
   const hm=hmOf(stamp);

@@ -62,6 +62,7 @@ export function MarketCardGrid({items, selected, onSelect, atmosphere, showStatu
         const quality = paused ? '连接暂停' : !item.usable || !item.quoteUsable ? item.quality : '';
         const caption = [...new Set([item.basis, status, quality].filter(Boolean))].join(' · ');
         const source = item.priceSource === 'bar' ? 'K线收盘' : item.quoteUsable ? '行情' : '快照';
+        const showTime = showStatus || (!item.quoteUsable && Boolean(item.changeTime));
         const bars = item.trend.bars;
         const curveLabel = bars.length
           ? `${bars.length}根5分钟收盘线 · ${datedClock(bars[0].end)} 至 ${datedClock(bars.at(-1).end)}`
@@ -79,7 +80,7 @@ export function MarketCardGrid({items, selected, onSelect, atmosphere, showStatu
           <Spark item={item} label={curveLabel}/>
           <div className="card-structure"><span>15m结构</span><b>{structures[item.regime?.state] || item.regime?.label || '待同步'}</b></div>
           <div className="card-price"><span>{shortContract(item.contract) || '待映射'}</span><b>{formatPrice(item.price, item.market)}</b></div>
-          {showStatus && <time className="card-time" dateTime={item.changeTime || undefined}>{source} {item.quoteUsable ? clockSeconds(item.changeTime) : datedClock(item.changeTime)}</time>}
+          {showTime && <time className="card-time" dateTime={item.changeTime || undefined}>{source} {item.quoteUsable ? clockSeconds(item.changeTime) : datedClock(item.changeTime)}</time>}
         </button>;
       })}</div>
     </div>)}

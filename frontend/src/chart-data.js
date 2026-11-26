@@ -46,23 +46,40 @@ export function followLatestRange(range,previousCount,nextCount){
   return {from:range.from+shift,to:range.to+shift};
 }
 
+// Wind labels are matched exactly on 1m/5m. On 15m a 5m event belongs to
+// the first candle ending at or after it, within the same 15-minute window.
+export function chartTimeLookup(bars, timeframe) {
+  const times = bars.map(bar => Date.parse(bar.end));
+  return stamp => {
+    const target = Date.parse(stamp);
+    if (!Number.isFinite(target)) return null;
+    let left = 0, right = times.length;
+    while (left < right) {
+      const mid = Math.floor((left + right) / 2);
+      if (times[mid] < target) left = mid + 1;
+      else right = mid;
+    }
+    const delta = times[left] - target;
+    return delta === 0 || (timeframe === 15 && delta < 15 * 60_000) ? times[left] / 1000 : null;
+  };
+}
+
 export function structureMarkers(structures,bars,timeframe){
   if(!bars.length)return [];
   const points=new Map();
-  const times=bars.map(b=>Date.parse(b.end));
+  const at=chartTimeLookup(bars,timeframe);
   for(const e of (structures||[]).slice(-70)){
     if(!['pivot','structure'].includes(e.kind))continue;
-    const anchor=Date.parse(e.occurred_at);
-    const index=timeframe===15?times.findIndex(t=>t>=anchor):times.indexOf(anchor);
-    if(index<0||anchor<times[index]-timeframe*60000)continue;
+    const time=at(e.occurred_at);
+    if(time===null)continue;
     const isPivot=e.kind==='pivot';
     const above=isPivot?e.side==='high':e.direction!==1;
     const position=above?'aboveBar':'belowBar';
     const text=(e.scale==='internal'?'i':'s')+(isPivot?(e.side==='high'?'H':'L'):' '+e.label);
-    const key=times[index]+position;
+    const key=time+position;
     let point=points.get(key);
     if(!point){
-      point={time:times[index]/1000,position,color:'#7c93ad',shape:'circle',size:.5,labels:[]};
+      point={time,position,color:'#7c93ad',shape:'circle',size:.5,labels:[]};
       points.set(key,point);
     }
     if(!point.labels.includes(text))point.labels.push(text);
